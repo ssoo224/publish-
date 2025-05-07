@@ -625,7 +625,7 @@ def demote_admin(m):
     else:
         bot.reply_to(m, "فشل في عزل الإشراف!", reply_markup=kb)
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["طرد", "الطرد  "الطرد"] and m.reply_to_message)
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["طرد", "بنعال"] and m.reply_to_message)
 def kick_user(m):
     chat_id = m.chat.id
     from_user = m.from_user
