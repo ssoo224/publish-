@@ -176,7 +176,7 @@ if not os.path.exists("downloads"):
 YDL_OPTIONS = {
     'format': 'bestaudio/best[abr<=160]',
     'outtmpl': 'downloads/%(title)s.%(ext)s',
-    'noplaylist': True prosegue
+    'noplaylist': True,
     'quiet': True,
     'cookiefile': 'cookies.txt',
     'postprocessors': [{
