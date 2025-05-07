@@ -1332,7 +1332,7 @@ def handle_all_callbacks(c):
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
             bot.edit_message_text("أنت تمتلك هذا الحيوان بالفعل!", chat_id, c.message.message_id, reply_markup=kb)
-            return
+return
         kb = InlineKeyboardMarkup()
         kb.add(
             InlineKeyboardButton("شراء", callback_data=f"confirm_buy_animal_{animal}_{user_id}"),
@@ -1351,8 +1351,8 @@ def handle_all_callbacks(c):
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
             bot.edit_message_text("أنت تمتلك هذا الطعام بالفعل!", chat_id, c.message.message_id, reply_markup=kb)
-return
-kb = InlineKeyboardMarkup()
+            return
+        kb = InlineKeyboardMarkup()
         kb.add(
             InlineKeyboardButton("شراء", callback_data=f"confirm_buy_food_{food}_{user_id}"),
             InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}")
