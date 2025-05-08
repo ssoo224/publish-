@@ -1463,12 +1463,6 @@ def handle_all_callbacks(c):
 
     bot.answer_callback_query(c.id)
 
-# --- Start the bot ---
-if __name__ == "__main__":
-    print("Bot is running...")
-    bot.infinity_polling()
-
-
 @bot.message_handler(func=lambda m: m.text and m.reply_to_message and m.from_user.id == DEVELOPER_ID and m.text.startswith("اضافة "))
 def add_balance(m):
     try:
@@ -1517,3 +1511,9 @@ def top_users(m):
     for i, (name, uid, balance) in enumerate(top_list, 1):
         message += f"{i}. {name} | {balance} نجمة\n"
     bot.reply_to(m, message)
+
+
+# --- Start the bot ---
+if __name__ == "__main__":
+    print("Bot is running...")
+    bot.infinity_polling()
