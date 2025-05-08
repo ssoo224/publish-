@@ -1,2 +1,4 @@
 pyTelegramBotAPI
 pytz
+yt-dlp
+requests
