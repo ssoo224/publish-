@@ -1509,10 +1509,9 @@ def top_users(m):
 
 message = "🏆 قائمة أغنى 20 مستخدم:"
 
-    for i, (name, uid, balance) in enumerate(top_list, 1):
-        message += f"{i}. {name} | {balance} نجمة
-"
-    bot.reply_to(m, message)
+for i, (name, uid, balance) in enumerate(top_list, 1):
+    message += f"{i}. {name} | {balance} نجمة\n"
+bot.reply_to(m, message)
 
 
 # --- Start the bot ---
