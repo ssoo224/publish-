@@ -1480,6 +1480,16 @@ def add_balance(m):
         bot.reply_to(m, "❌ تأكد من كتابة الأمر بشكل صحيح: اضافة [المبلغ]")
 
 
+
+
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "تصفير توب" and m.from_user.id == DEVELOPER_ID)
+def reset_top(m):
+    for uid in list(user_balances.keys()):
+        user_balances[uid] = 0
+    bot.reply_to(m, "✅ تم تصفير جميع الأرصدة.")
+
+
 import heapq
 last_top_time = 0
 top_list = []
@@ -1504,15 +1514,6 @@ def top_users(m):
         return
 
     message = "🏆 قائمة أغنى 20 مستخدم:\n"
-"
     for i, (name, uid, balance) in enumerate(top_list, 1):
         message += f"{i}. {name} | {balance} نجمة\n"
     bot.reply_to(m, message)
-
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "تصفير توب" and m.from_user.id == DEVELOPER_ID)
-def reset_top(m):
-    for uid in list(user_balances.keys()):
-        user_balances[uid] = 0
-    bot.reply_to(m, "✅ تم تصفير جميع الأرصدة.")
-
