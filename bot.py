@@ -35,7 +35,7 @@ waiting_media = {}  # {user_id: {"chat_id": int, "platform": str, "message_id": 
 user_messages = {}  # {chat_id: {user_id: message_count}}
 
 # --- Darlen replies ---
-darlen_replies = ["مشغول تعال بعدين", "سم", "أهلا!", "عيوني", "نورت ياغالي!", "تفضل"]
+darlen_replies = ["هاااع", "تفضل يئلبي 😘", "مشغولة وية صاحبي", "عيوني", "متزوجة ترة 💍", "؟!"]
 darlen_reply_index = {}
 
 # --- Bad word reactions ---
@@ -70,9 +70,9 @@ replied_users = set()
 
 # --- Private chat replies ---
 private_chat_replies = [
-    "إيه يا جدعان؟ هتحكوا ولا بتخبّوا عليا؟",
-    "هترغوا في إيه؟ ما تقولوا، أنا مش منّكم ولا إيه؟",
-    "شكلي كده بتداروا عليا حاجة، بس أنا صاحبكم برضه!"
+    "اخذوني وياكم 😔",
+    "شسوون هناك 😈",
+    "راح يتحرش بالخاص"
 ]
 private_reply_index = 0
 
@@ -368,49 +368,44 @@ threading.Thread(target=check_word_game_timeout, daemon=True).start()
 # --- Message Handlers ---
 @bot.message_handler(func=lambda m: m.text and m.text.lower() in ["هه", "ههه", "هههه", "ههههه", "هههههه", "ههههههههههه"])
 def laugh_reply(m):
-    bot.reply_to(m, "ضحكه مش سالكه 😳😂")
+    bot.reply_to(m, "خوش تسلك")
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "شوف")
 def show_reply(m):
-    bot.reply_to(m, "اشوف اي 🌝🌝")
+    bot.reply_to(m, "ششوف")
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "الحمدلله")
 def alhamdulillah_reply(m):
-    bot.reply_to(m, "ديما❤️☁️")
+    bot.reply_to(m, "دوم بيبي 🤭")
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() in ["هلا", "اهلا"])
 def hello_reply(m):
-    bot.reply_to(m, "السلام عليكم ياغالي ❤️‍🩹")
+    bot.reply_to(m, "هلع")
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "سلام")
 def salam_reply(m):
-    bot.reply_to(m, "روح نام يا حب 😂")
+    bot.reply_to(m, "كمل سلام ابني")
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "نعم")
 def yes_reply(m):
-    bot.reply_to(m, "نعم، الله عليك❤️😂")
+    bot.reply_to(m, "الله ينعم عليك")
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["+18", "جنس"])
-def adult_content_reply(m):
-    bot.set_message_reaction(m.chat.id, m.message_id, reaction=[ReactionTypeEmoji(emoji="😳")])
-    bot.reply_to(m, "ربي، إيه اللي بسمعه ده؟ 😂😳")
-
-@bot.message_handler(func=lambda m: m.text and "🖕" in m.text)
+@bot.message_handler(func=lambda m: m.text and "احبج" in m.text)
 def middle_finger_reply(m):
     bot.set_message_reaction(m.chat.id, m.message_id, reaction=[ReactionTypeEmoji(emoji="🤣")])
-    bot.reply_to(m, "خسارة، كنت فاكر إنك راجل محترم، بس واضح إنك مش قد كده! 😆")
+    bot.reply_to(m, "حبتك حية ام راسين")
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "اي")
 def what_reply(m):
-    bot.reply_to(m, "جتك اوهه م سامع ولا ايي😹👻")
+    bot.reply_to(m, "وجعي")
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "حبيبي")
 def darling_reply(m):
-    bot.reply_to(m, "اوه ياه 🌝😂")
+    bot.reply_to(m, "متحرش")
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "بوت")
 def bot_reply(m):
-    bot.reply_to(m, "اسمى دالن ياحب 🙄❤️")
+    bot.reply_to(m, "اسمي NoNa ولك 🙄❤️")
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() in ["خاص", "خاااص", "تعال خاص", "تع", "ابعث", "إبعث"])
 def private_chat_reply(m):
@@ -418,7 +413,7 @@ def private_chat_reply(m):
     bot.reply_to(m, private_chat_replies[private_reply_index])
     private_reply_index = (private_reply_index + 1) % len(private_chat_replies)
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "دارلن")
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "نونا")
 def reply_darlen(m):
     uid = m.from_user.id
     idx = darlen_reply_index.get(uid, 0)
@@ -446,7 +441,7 @@ def react_badword(m):
     idx = (idx + 1) % len(badword_reactions)
     badword_index[uid] = idx
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "معرفي")
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "ايدي")
 def show_user_id(m):
     user_id = m.from_user.id
     firstname = m.from_user.first_name
@@ -701,7 +696,7 @@ def handle_left_member(m):
     chat_id = m.chat.id
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{m.from_user.id}"))
-    bot.reply_to(m, "انت مش جدع. حد يكون فى روم زى ده ويخرج، ده حتى كلنا اخوات واصحاب، يلا بالسلامات.", reply_markup=kb)
+    bot.reply_to(m, "توصل بالسلامة", reply_markup=kb)
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "حيواناتي")
 def show_user_animals(m):
