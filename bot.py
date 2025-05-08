@@ -11,7 +11,7 @@ import shutil
 from yt_dlp import YoutubeDL
 
 # Bot settings
-TOKEN = "8074002868:AAEDGnXz4WOzslMv2BO4u_vG8hekkbq48-o"
+TOKEN = "7117925617:AAEvrbPnqplZsPwc5lTNLAPTGXPLWiV4ZPg"
 bot = telebot.TeleBot(TOKEN)
 
 # --- User data ---
