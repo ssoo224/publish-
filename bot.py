@@ -1076,55 +1076,6 @@ def count_messages(m):
     user_id = m.from_user.id
     user_messages.setdefault(chat_id, {})
     user_messages[chat_id][user_id] = user_messages[chat_id].get(user_id, 0) + 1
-# --- Callback Query Handler ---
-@bot.message_handler(func=lambda m: m.text and m.reply_to_message and m.from_user.id == DEVELOPER_ID and m.text.startswith("اضافة "))
-def add_balance(m):
-    try:
-        amount = int(m.text.split()[1])
-        target_id = m.reply_to_message.from_user.id
-        user_balances[target_id] = user_balances.get(target_id, 0) + amount
-        bot.reply_to(m, f"✅ تم إضافة {amount} لرصيد العضو.")
-    except:
-        bot.reply_to(m, "❌ تأكد من كتابة الأمر بشكل صحيح: اضافة [المبلغ]")
-
-
-
-
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "تصفير توب" and m.from_user.id == DEVELOPER_ID)
-def reset_top(m):
-    for uid in list(user_balances.keys()):
-        user_balances[uid] = 0
-    bot.reply_to(m, "✅ تم تصفير جميع الأرصدة.")
-
-
-import heapq
-last_top_time = 0
-top_list = []
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "توب")
-def top_users(m):
-    global last_top_time, top_list
-    now = time.time()
-    if now - last_top_time > 600:
-        sorted_balances = heapq.nlargest(20, user_balances.items(), key=lambda x: x[1])
-        top_list = []
-        for uid, balance in sorted_balances:
-            try:
-                name = bot.get_chat_member(m.chat.id, uid).user.first_name
-                top_list.append((name, uid, balance))
-            except:
-                continue
-        last_top_time = now
-
-    if not top_list:
-        bot.reply_to(m, "لا يوجد أي مستخدم يمتلك رصيد.")
-        return
-
-    message = "🏆 قائمة أغنى 20 مستخدم:\n"
-    for i, (name, uid, balance) in enumerate(top_list, 1):
-        message += f"{i}. {name} | {balance} نجمة\n"
-    bot.reply_to(m, message)
 
 # --- Callback Query Handler ---
 @bot.callback_query_handler(func=lambda c: True)
@@ -1511,6 +1462,56 @@ def handle_all_callbacks(c):
         }
 
     bot.answer_callback_query(c.id)
+
+@bot.message_handler(func=lambda m: m.text and m.reply_to_message and m.from_user.id == DEVELOPER_ID and m.text.startswith("اضافة "))
+def add_balance(m):
+    try:
+        amount = int(m.text.split()[1])
+        target_id = m.reply_to_message.from_user.id
+        user_balances[target_id] = user_balances.get(target_id, 0) + amount
+        bot.reply_to(m, f"✅ تم إضافة {amount} لرصيد العضو.")
+    except:
+        bot.reply_to(m, "❌ تأكد من كتابة الأمر بشكل صحيح: اضافة [المبلغ]")
+
+
+
+
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "تصفير توب" and m.from_user.id == DEVELOPER_ID)
+def reset_top(m):
+    for uid in list(user_balances.keys()):
+        user_balances[uid] = 0
+    bot.reply_to(m, "✅ تم تصفير جميع الأرصدة.")
+
+
+import heapq
+last_top_time = 0
+top_list = []
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "توب")
+def top_users(m):
+    global last_top_time, top_list
+    now = time.time()
+    if now - last_top_time > 600:
+        sorted_balances = heapq.nlargest(20, user_balances.items(), key=lambda x: x[1])
+        top_list = []
+        for uid, balance in sorted_balances:
+            try:
+                name = bot.get_chat_member(m.chat.id, uid).user.first_name
+                top_list.append((name, uid, balance))
+            except:
+                continue
+        last_top_time = now
+
+    if not top_list:
+        bot.reply_to(m, "لا يوجد أي مستخدم يمتلك رصيد.")
+        return
+
+    message = "🏆 قائمة أغنى 20 مستخدم:\n"
+    for i, (name, uid, balance) in enumerate(top_list, 1):
+        message += f"{i}. {name} | {balance} نجمة\n"
+    bot.reply_to(m, message)
+
 
 # --- Start the bot ---
 if __name__ == "__main__":
