@@ -1321,23 +1321,23 @@ def handle_all_callbacks(c):
         )
         bot.edit_message_text("اشترِ منتجات متنوعة من المتجر!", chat_id, c.message.message_id, reply_markup=kb)
 
-    elif data.startswith("buy_animal_"):
-        animal = data.split("_")[2]
-        price = store_animals.get(animal)
-        if not price:
-            bot.answer_callback_query(c.id)
-            return
-        user_animals.setdefault(user_id, {})
-        if animal in user_animals[user_id] or f"ال{animal}" in user_animals[user_id]:
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
-            bot.edit_message_text("أنت تمتلك هذا الحيوان بالفعل!", chat_id, c.message.message_id, reply_markup=kb)
-return
+elif data.startswith("buy_animal_"):
+    animal = data.split("_")[2]
+    price = store_animals.get(animal)
+    if not price:
+        bot.answer_callback_query(c.id)
+        return
+    user_animals.setdefault(user_id, {})
+    if animal in user_animals[user_id] or f"ال{animal}" in user_animals[user_id]:
         kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("شراء", callback_data=f"confirm_buy_animal_{animal}_{user_id}"),
-            InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}")
-        )
+        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
+        bot.edit_message_text("أنت تمتلك هذا الحيوان بالفعل!", chat_id, c.message.message_id, reply_markup=kb)
+        return
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("شراء", callback_data=f"confirm_buy_animal_{animal}_{user_id}"),
+        InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}")
+    )
         bot.edit_message_text(f"هل تريد شراء {animal} بـ {price} نجمة؟", chat_id, c.message.message_id, reply_markup=kb)
 
     elif data.startswith("buy_food_"):
