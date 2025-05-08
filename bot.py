@@ -1507,11 +1507,10 @@ def top_users(m):
         bot.reply_to(m, "لا يوجد أي مستخدم يمتلك رصيد.")
         return
 
-message = "🏆 قائمة أغنى 20 مستخدم:"
-
-for i, (name, uid, balance) in enumerate(top_list, 1):
-    message += f"{i}. {name} | {balance} نجمة\n"
-bot.reply_to(m, message)
+    msg = "🏆 قائمة أغنى 20 مستخدم:\n"
+    for i, (name, uid, balance) in enumerate(top_list, 1):
+        msg += f"{i}. {name} | {balance} نجمة\n"
+    bot.reply_to(m, msg)
 
 
 # --- Start the bot ---
