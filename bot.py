@@ -1,1519 +1,952 @@
-import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions, ReactionTypeEmoji
-from datetime import datetime, timedelta, date
-import threading
-import time
-import random
 import requests
-import os
-import asyncio
-import shutil
-from yt_dlp import YoutubeDL
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 
-# Bot settings
-TOKEN = "7117925617:AAEvrbPnqplZsPwc5lTNLAPTGXPLWiV4ZPg"
-bot = telebot.TeleBot(TOKEN)
-DEVELOPER_ID = 7115002714
+TELEGRAM_TOKEN = "8195582384:AAEqMSrcqTRLtRHAC2oYU8dGynMHOnvzIJQ"
+BINANCE_API_URL = "https://api.binance.com/api/v3"
 
+CANDLE_PATTERNS = {
+    # أنماط صعودية
+    "المطرقة": {  # hammer
+        "emoji": "🔨",
+        "direction": "صعودي قوي",
+        "condition": lambda o, h, l, c: (c > o) and ((h-l) > 3*(c-o)) and ((o-l)/(0.001+h-l) > 0.6)
+    },
+    "المطرقة المقلوبة": {  # inverted_hammer
+        "emoji": "🔄",
+        "direction": "صعودي",
+        "condition": lambda o, h, l, c: (c > o) and ((h-l) > 3*(c-o)) and ((h-c)/(0.001+h-l) > 0.6)
+    },
+    "الابتلاع الصعودي": {  # bullish_engulfing
+        "emoji": "🟢",
+        "direction": "صعودي قوي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2: (c1 < o1) and (c2 > o2) and (c2 > o1) and (o2 < c1)
+    },
+    "خط الاختراق": {  # piercing_line
+        "emoji": "🧵",
+        "direction": "صعودي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2: (c1 < o1) and (o2 < l1) and (c2 > (o1+c1)/2)
+    },
+    "النجمة الصباحية": {  # morning_star
+        "emoji": "🌅",
+        "direction": "صعودي قوي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2, o3, h3, l3, c3: (c1 < o1) and (abs(c2-o2) < (h2-l2)*0.3) and (c3 > o3) and (c3 > (o1+c1)/2)
+    },
+    "الجنود الثلاثة البيض": {  # three_white_soldiers
+        "emoji": "💂💂💂",
+        "direction": "صعودي قوي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2, o3, h3, l3, c3: all(c > o for c, o in [(c1,o1),(c2,o2),(c3,o3)]) and all(o < prev_c for o, prev_c in [(o2,c1),(o3,c2)]) and all(c < next_h for c, next_h in [(c1,h2),(c2,h3)])
+    },
+    "طريقة الصعود": {  # rising_method
+        "emoji": "📈",
+        "direction": "صعودي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2, o3, h3, l3, c3: (c1 > o1) and (c2 > o2) and (c3 > o3) and (l1 < l2 < l3) and (h1 < h2 < h3)
+    },
+    "حزام التثبيت الصعودي": {  # belt_hold_bullish
+        "emoji": "🔼",
+        "direction": "صعودي",
+        "condition": lambda o, h, l, c: (c > o) and ((h - c) < 0.1 * (h - l)) and ((o - l) < 0.1 * (h - l))
+    },
+    "تاسوكي الصاعد": {  # upside_tasuki
+        "emoji": "🎎",
+        "direction": "صعودي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2, o3, h3, l3, c3: (c1 > o1) and (c2 > o2) and (c3 < o3) and (o3 > c2) and (c3 > o1)
+    },
+    "الحمل الصعودي": {  # harami_bullish
+        "emoji": "🤰",
+        "direction": "صعودي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2: (c1 < o1) and (c2 > o2) and (o2 > c1) and (c2 < o1)
+    },
+    "ذبابة التنين": {  # dragonfly_doji
+        "emoji": "🦟",
+        "direction": "صعودي",
+        "condition": lambda o, h, l, c: abs(o - c) < 0.1 * (h - l) and ((min(o,c) - l) > 0.7*(h-l))
+    },
 
-# --- User data ---
-user_balances = {}  # {user_id: int}
-clubs_owned = {}  # {user_id: {"type": "عربي" or "أجنبي", "join_date": datetime, "ball": "كرة القدم" or "كرة السلة"}}
-warnings = {}  # {chat_id: {user_id: warning_count}}
-mutes = {}  # {chat_id: {user_id: mute_until_datetime}}
-user_gifts = {}  # {user_id: last_gift_date}
-user_animals = {}  # {user_id: {animal_name: price}}
-user_foods = {}  # {user_id: {food_name: price}}
-user_vehicles = {}  # {user_id: {vehicle_name: price}}
-ball_status = {}  # {user_id: {"has_ball": bool, "last_action": datetime, "ball_type": "كرة القدم" or "كرة السلة", "start_time": datetime, "stars_earned": int, "result": str, "duration": int}}
-ongoing_trainings = {}  # {user_id: {"end_time": datetime, "last_training_date": date}}
-last_feed_time = {}  # {user_id: {animal_name: datetime}}
-welcome_messages = {}  # {chat_id: {"type": "text" or "photo" or "voice", "content": str or file_id, "caption": str or None}}
-waiting_welcome = {}  # {user_id: {"chat_id": int, "message_id": int}}
-waiting_admin_action = {}  # {user_id: {"chat_id": int, "action": "promote" or "demote"}}
-waiting_gift = {}  # {user_id: {"chat_id": int, "message_id": int, "target_id": int}}
-words_waiting = {}  # {user_id: {"word": str, "message_id": int, "chat_id": int, "sent_time": datetime}}
-waiting_media = {}  # {user_id: {"chat_id": int, "platform": str, "message_id": int}}
-user_messages = {}  # {chat_id: {user_id: message_count}}
+    # أنماط هبوطية
+    "المشنوق": {  # hanging_man
+        "emoji": "👨‍🦳",
+        "direction": "هبوطي قوي",
+        "condition": lambda o, h, l, c: (o > c) and ((h-l) > 3*(o-c)) and ((o-l)/(0.001+h-l) > 0.6)
+    },
+    "النجمة الهابطة": {  # shooting_star
+        "emoji": "⭐",
+        "direction": "هبوطي قوي",
+        "condition": lambda o, h, l, c: (o > c) and ((h-l) > 3*(o-c)) and ((h-o)/(0.001+h-l) > 0.6)
+    },
+    "الابتلاع الهبوطي": {  # bearish_engulfing
+        "emoji": "🔴",
+        "direction": "هبوطي قوي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2: (c1 > o1) and (c2 < o2) and (c2 < o1) and (o2 > c1)
+    },
+    "السحابة المظلمة": {  # dark_cloud_cover
+        "emoji": "☁️",
+        "direction": "هبوطي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2: (c1 > o1) and (o2 > h1) and (c2 < (o1+c1)/2) and (c2 > o2*0.9)
+    },
+    "النجمة المسائية": {  # evening_star
+        "emoji": "🌇",
+        "direction": "هبوطي قوي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2, o3, h3, l3, c3: (c1 > o1) and (abs(c2-o2) < (h2-l2)*0.3) and (c3 < o3) and (c3 < (o1+c1)/2)
+    },
+    "الغربان الثلاثة السوداء": {  # three_black_crows
+        "emoji": "🐦‍⬛🐦‍⬛🐦‍⬛",
+        "direction": "هبوطي قوي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2, o3, h3, l3, c3: all(c < o for c, o in [(c1,o1),(c2,o2),(c3,o3)]) and all(o > prev_c for o, prev_c in [(o2,c1),(o3,c2)]) and all(c > next_l for c, next_l in [(c1,l2),(c2,l3)])
+    },
+    "طريقة الهبوط": {  # falling_method
+        "emoji": "📉",
+        "direction": "هبوطي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2, o3, h3, l3, c3: (c1 < o1) and (c2 < o2) and (c3 < o3) and (h1 > h2 > h3) and (l1 > l2 > l3)
+    },
+    "حزام التثبيت الهبوطي": {  # belt_hold_bearish
+        "emoji": "🔽",
+        "direction": "هبوطي",
+        "condition": lambda o, h, l, c: (c < o) and ((h - o) < 0.1 * (h - l)) and ((c - l) < 0.1 * (h - l))
+    },
+    "تاسوكي الهابط": {  # downside_tasuki
+        "emoji": "🎎",
+        "direction": "هبوطي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2, o3, h3, l3, c3: (c1 < o1) and (c2 < o2) and (c3 > o3) and (o3 < c2) and (c3 < o1)
+    },
+    "الحمل الهبوطي": {  # harami_bearish
+        "emoji": "🤰",
+        "direction": "هبوطي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2: (c1 > o1) and (c2 < o2) and (o2 < c1) and (c2 > o1)
+    },
+    "شاهد القبر": {  # gravestone_doji
+        "emoji": "🪦",
+        "direction": "هبوطي",
+        "condition": lambda o, h, l, c: abs(o - c) < 0.1 * (h - l) and ((h - max(o,c)) > 0.7*(h-l))
+    },
 
-# --- Darlen replies ---
-darlen_replies = ["هاااع", "تفضل يئلبي 😘", "مشغولة وية صاحبي", "عيوني", "متزوجة ترة 💍", "؟!"]
-darlen_reply_index = {}
-
-# --- Bad word reactions ---
-badword_reactions = ["🗿", "🌚", "🌝", "😐", "😡", "🤯"]
-badword_index = {}
-
-# --- Morning messages ---
-morning_messages = [
-    "جدعان، فينكم؟ طنشتوني ولا إيه؟ أخباركم؟ 🗿",
-    "إيه يا رجالة، نمتوا ولا ايه؟ فاكرين العيش والملح ولا نسيتوا؟ عاملين ايه؟ 🌞",
-    "يا أصحاب، اختفيتوا فين؟ مش لاقي حد؟ الدنيا عاملة ايه؟ 🌎",
-    "معلمين، مفيش حس؟ كله تمام ولا ايه؟🙈"
-]
-morning_message_index = 0
-last_morning_message_date = None
-
-# --- Inactive user replies ---
-inactive_user_replies = [
-    "يا جدعان، فينكوا؟ زهقت! ما تيجوا نروق الدنيا ونجيب كام نجمة نهيص بيهم ⭐️",
-    "إيه يا رجالة؟ نمتوا ولا إيه؟ يلا بينا نولعها ونجيب نجوم السماء 💫",
-    "يا أهالينا، الطفش دبحني! مش هتيجوا نلم نجوم ونقلب الدنيا فرح؟ 🌚",
-    "يلا بينا على السوق نجيب حيوانات تهبل! بس لازم نلم نجوم الأول عشان الفلوس تكفي ✨",
-    "نفسي في قرد نطاط... بس استنى! لازم نشتغل ونجيب نجوم الأول عشان خاطر عيون القرد 🐵",
-    "يا ترى هنشتري ببغاء ولا قطة؟ المهم نجمع نجوم كتير الأول عشان نختار براحتنا 🌹",
-    "يا عمري، كل ده تأخير؟ قلبي هيقف! يلا بقى، مستنياك عشان نلعب وننور الدنيا 🔥",
-    "يا حبيبي، روحت فين؟ وحشتني! تعالى بسرعة نلم نجوم وننسى الزعل 🌺",
-    "يا نور عيني، بطّلت أشوف من غيرك! يلا تعالى نجمع نجوم ونرجع نضحك تاني 😂"
-]
-inactive_reply_index = 0
-last_inactive_reply_date = None
-replied_users = set()
-
-# --- Private chat replies ---
-private_chat_replies = [
-    "اخذوني وياكم 😔",
-    "شسوون هناك 😈",
-    "راح يتحرش بالخاص"
-]
-private_reply_index = 0
-
-# --- Arabic words for word game ---
-arabic_words = [
-    "كتاب", "مدرسة", "شجرة", "بحر", "سماء", "قمر", "شمس", "نجم", "وردة", "طائر",
-    "سيارة", "منزل", "حديقة", "نهر", "جبل", "غابة", "مدينة", "قرية", "طريق", "جسر"
-]
-
-# --- Store ---
-store_foods = {
-    "الحلويات": 50,
-    "الفواكه": 40,
-    "الألبان": 30,
-    "الأسماك": 70,
-    "خضروات": 20,
-    "الأرز": 25,
-    "بطاطس": 15,
-    "مكسرات": 60
-}
-
-store_animals = {
-    "خنزير": 500, "الخنزير": 500,
-    "تلقطة": 600, "التلقطة": 600,
-    "دلفين": 800, "الدلفين": 800,
-    "سلحفات": 400, "السلحفات": 400,
-    "كلب": 300, "الكلب": 300,
-    "معز": 350, "المعز": 350,
-    "بقرة": 700, "البقرة": 700,
-    "غزالة": 650, "الغزالة": 650,
-    "ضفدع": 150, "الضفدع": 150,
-    "أسد": 900, "الأسد": 900,
-    "نمر": 850, "النمر": 850,
-    "فيل": 1000, "الفيل": 1000,
-    "زرافة": 950, "الزرافة": 950,
-    "قرد": 550, "القرد": 550,
-    "حصان": 750, "الحصان": 750,
-    "أرنب": 200, "الأرنب": 200,
-    "ببغاء": 250, "الببغاء": 250
-}
-
-store_vehicles = {
-    "سيارة": 37,
-    "دراجة نارية": 59,
-    "طائرة": 100,
-    "حافلة": 79,
-    "صاروخ": 83
-}
-
-# --- Commands that can be deleted by admins or owner ---
-ALLOWED_DELETE_COMMANDS = [
-    "رصيدي", "المتجر", "متجر", "الكلمات", "كلمات", "حيواناتي", "الأوامر", "اوامر",
-    "كرة", "الكرة", "تمرير", "هدف", "تسجيل", "تمرين", "فيس", "فيسبوك",
-    "يوت", "انستا", "إنستا", "انستغرام", "إنستغرام", "أنستغرام"
-]
-
-# --- وظيفة مساعدة لتثبيت المكتبات ---
-def install_library(library_name):
-    try:
-        __import__(library_name)
-        print(f"✅ مكتبة {library_name} مثبتة.")
-        return True
-    except ImportError:
-        print(f"🔄 جاري تثبيت مكتبة {library_name}...")
-        os.system(f"pip install {library_name}")
-        try:
-            __import__(library_name)
-            print(f"✅ تم تثبيت مكتبة {library_name} بنجاح.")
-            return True
-        except ImportError:
-            print(f"❌ فشل تثبيت مكتبة {library_name}. يرجى المحاولة مرة أخرى.")
-            return False
-
-# --- تثبيت yt-dlp ---
-if not install_library("yt_dlp"):
-    print("❌ يجب تثبيت yt-dlp لتحميل الصوت.")
-    exit()
-
-# --- وظيفة مساعدة للتحقق من ffmpeg ---
-def check_ffmpeg():
-    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
-        print("✅ تم العثور على ffmpeg و ffprobe.")
-        return True
-    else:
-        print("⚠️ لم يتم العثور على ffmpeg أو ffprobe.")
-        print("   يرجى تثبيتهما لتحميل الصوت.")
-        print("   - Linux (Debian/Ubuntu): sudo apt update && sudo apt install ffmpeg")
-        print("   - Linux (Fedora/CentOS): sudo dnf install ffmpeg")
-        print("   - macOS: brew install ffmpeg")
-        print("   - Windows: قم بتنزيلهما من موقع ffmpeg وإضافتهما إلى PATH.")
-        return False
-
-# --- التحقق من ffmpeg ---
-if not check_ffmpeg():
-    exit()
-
-# --- إعدادات التحميل ---
-if not os.path.exists("downloads"):
-    os.makedirs("downloads")
-
-YDL_OPTIONS = {
-    'format': 'bestaudio/best[abr<=160]',
-    'outtmpl': 'downloads/%(title)s.%(ext)s',
-    'noplaylist': True,
-    'quiet': True,
-    'cookiefile': 'cookies.txt',
-    'postprocessors': [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'mp3',
-        'preferredquality': '128',
-    }],
-}
-
-# --- Helpers ---
-def is_owner(chat_id, user_id):
-    try:
-        member = bot.get_chat_member(chat_id, user_id)
-        return member.status == 'creator'
-    except:
-        return False
-
-def is_admin(chat_id, user_id):
-    try:
-        member = bot.get_chat_member(chat_id, user_id)
-        return member.status in ['administrator', 'creator']
-    except:
-        return False
-
-def promote_user(chat_id, user_id, custom_title=None):
-    try:
-        bot.promote_chat_member(chat_id, user_id,
-                                can_change_info=True,
-                                can_delete_messages=True,
-                                can_invite_users=True,
-                                can_restrict_members=True,
-                                can_pin_messages=True,
-                                can_promote_members=False,
-                                can_manage_voice_chats=True)
-        if custom_title:
-            bot.set_chat_administrator_custom_title(chat_id, user_id, custom_title)
-        return True
-    except:
-        return False
-
-def demote_user(chat_id, user_id):
-    try:
-        bot.promote_chat_member(chat_id, user_id,
-                                can_change_info=False,
-                                can_delete_messages=False,
-                                can_invite_users=False,
-                                can_restrict_members=False,
-                                can_pin_messages=False,
-                                can_promote_members=False,
-                                can_manage_voice_chats=False)
-        return True
-    except:
-        return False
-
-def mute_user_until_tomorrow_evening(chat_id, user_id):
-    try:
-        now = datetime.now()
-        tomorrow_evening = datetime.combine(now.date() + timedelta(days=1), datetime.min.time()) + timedelta(hours=20)
-        permissions = ChatPermissions(can_send_messages=False, can_send_media_messages=False,
-                                      can_send_polls=False, can_send_other_messages=False,
-                                      can_add_web_page_previews=False, can_change_info=False,
-                                      can_invite_users=False, can_pin_messages=False)
-        bot.restrict_chat_member(chat_id, user_id, permissions=permissions, until_date=tomorrow_evening)
-        if chat_id not in mutes:
-            mutes[chat_id] = {}
-        mutes[chat_id][user_id] = tomorrow_evening
-        return True
-    except:
-        return False
-
-def unmute_user(chat_id, user_id):
-    try:
-        permissions = ChatPermissions(can_send_messages=True, can_send_media_messages=True,
-                                      can_send_polls=True, can_send_other_messages=True,
-                                      can_add_web_page_previews=True, can_change_info=False,
-                                      can_invite_users=True, can_pin_messages=True)
-        bot.restrict_chat_member(chat_id, user_id, permissions=permissions)
-        if chat_id in mutes and user_id in mutes[chat_id]:
-            del mutes[chat_id][user_id]
-        return True
-    except:
-        return False
-
-def normalize_word(word):
-    word = word.strip().lower()
-    if word.endswith("ة"):
-        return word[:-1] + "ه"
-    elif word.endswith("ه"):
-        return word[:-1] + "ة"
-    else:
-        return word
-
-def get_user_id_from_username(chat_id, username):
-    try:
-        username = username.lstrip('@').lower()
-        admins = bot.get_chat_administrators(chat_id)
-        members = bot.get_chat_members(chat_id)
-        for member in admins + members:
-            if member.user.username and member.user.username.lower() == username:
-                return member.user.id
-        return None
-    except:
-        return None
-
-def download_media(url, platform):
-    try:
-        if platform == "facebook":
-            download_url = f"https://fdown.hideme.eu.org/?url={url}"
-            response = requests.get(download_url, timeout=10)
-            if response.status_code == 200:
-                return response.text  # Adjust based on actual API response
-        else:
-            api_url = f"https://tele-social.vercel.app/down?url={url}"
-            response = requests.get(api_url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("status"):
-                    if platform == "youtube":
-                        return data["data"].get("audio")
-                    elif platform == "instagram":
-                        return data["data"].get("video") or data["data"].get("image")
-        return None
-    except:
-        return None
-
-# --- Morning message and inactive user reply scheduler ---
-def send_morning_and_inactive_messages():
-    global morning_message_index, last_morning_message_date, inactive_reply_index, last_inactive_reply_date
-    while True:
-        now = datetime.now()
-        today = now.date()
-        # Morning messages at 8:00 AM
-        if last_morning_message_date != today and now.hour == 8 and now.minute == 0:
-            message = morning_messages[morning_message_index]
-            for chat_id in welcome_messages.keys():
-                try:
-                    bot.send_message(chat_id, message)
-                except:
-                    pass
-            morning_message_index = (morning_message_index + 1) % len(morning_messages)
-            last_morning_message_date = today
-
-        # Inactive user replies at 9:00 AM
-        if last_inactive_reply_date != today and now.hour == 9 and now.minute == 0:
-            for chat_id in user_messages.keys():
-                for user_id, count in user_messages[chat_id].items():
-                    if user_id not in replied_users and count > 0:
-                        bot_commands = ["رصيدي", "المتجر", "متجر", "الكلمات", "كلمات", "حيواناتي", "الأوامر", "اوامر",
-                                        "كرة", "الكرة", "تمرير", "هدف", "تسجيل", "تمرين", "فيس", "فيسبوك",
-                                        "يوت", "انستا", "إنستا", "انستغرام", "إنستغرام", "أنستغرام"]
-                        user_used_bot = False
-                        try:
-                            messages = bot.search_chat_messages(chat_id, from_user=user_id)
-                            for msg in messages:
-                                if msg.text and msg.text.lower() in bot_commands:
-                                    user_used_bot = True
-                                    break
-                        except:
-                            continue
-                        if not user_used_bot:
-                            try:
-                                bot.send_message(chat_id, inactive_user_replies[inactive_reply_index])
-                                replied_users.add(user_id)
-                                inactive_reply_index = (inactive_reply_index + 1) % len(inactive_user_replies)
-                                last_inactive_reply_date = today
-                                break
-                            except:
-                                continue
-            if last_inactive_reply_date != today:
-                replied_users.clear()
-        time.sleep(60)
-
-# --- Word game timeout checker ---
-def check_word_game_timeout():
-    while True:
-        now = datetime.now()
-        for user_id, data in list(words_waiting.items()):
-            if now >= data["sent_time"] + timedelta(hours=5):
-                try:
-                    bot.delete_message(data["chat_id"], data["message_id"])
-                except:
-                    pass
-                words_waiting.pop(user_id, None)
-        time.sleep(60)
-
-threading.Thread(target=send_morning_and_inactive_messages, daemon=True).start()
-threading.Thread(target=check_word_game_timeout, daemon=True).start()
-
-# --- Message Handlers ---
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["هه", "ههه", "هههه", "ههههه", "هههههه", "ههههههههههه"])
-def laugh_reply(m):
-    bot.reply_to(m, "خوش تسلك")
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "شوف")
-def show_reply(m):
-    bot.reply_to(m, "ششوف")
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "الحمدلله")
-def alhamdulillah_reply(m):
-    bot.reply_to(m, "دوم بيبي 🤭")
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["هلا", "اهلا"])
-def hello_reply(m):
-    bot.reply_to(m, "هلع")
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "سلام")
-def salam_reply(m):
-    bot.reply_to(m, "كمل سلام ابني")
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "نعم")
-def yes_reply(m):
-    bot.reply_to(m, "الله ينعم عليك")
-
-@bot.message_handler(func=lambda m: m.text and "احبج" in m.text)
-def middle_finger_reply(m):
-    bot.set_message_reaction(m.chat.id, m.message_id, reaction=[ReactionTypeEmoji(emoji="🤣")])
-    bot.reply_to(m, "حبتك حية ام راسين")
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "اي")
-def what_reply(m):
-    bot.reply_to(m, "وجعي")
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "حبيبي")
-def darling_reply(m):
-    bot.reply_to(m, "متحرش")
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "بوت")
-def bot_reply(m):
-    bot.reply_to(m, "اسمي NoNa ولك 🙄❤️")
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["خاص", "خاااص", "تعال خاص", "تع", "ابعث", "إبعث"])
-def private_chat_reply(m):
-    global private_reply_index
-    bot.reply_to(m, private_chat_replies[private_reply_index])
-    private_reply_index = (private_reply_index + 1) % len(private_chat_replies)
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "نونا")
-def reply_darlen(m):
-    uid = m.from_user.id
-    idx = darlen_reply_index.get(uid, 0)
-    bot.reply_to(m, darlen_replies[idx])
-    idx = (idx + 1) % len(darlen_replies)
-    darlen_reply_index[uid] = idx
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["تبا", "كس امك", "كس أمك"])
-def react_badword(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    idx = badword_index.get(uid, 0)
-    reaction = random.choice(badword_reactions)
-    try:
-        bot.set_message_reaction(chat_id, m.message_id, reaction=[ReactionTypeEmoji(emoji=reaction)])
-        def delete_message():
-            time.sleep(5)
-            try:
-                bot.delete_message(chat_id, m.message_id)
-            except:
-                pass
-        threading.Thread(target=delete_message).start()
-    except:
-        pass
-    idx = (idx + 1) % len(badword_reactions)
-    badword_index[uid] = idx
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "ايدي")
-def show_user_id(m):
-    user_id = m.from_user.id
-    firstname = m.from_user.first_name
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
-    bot.reply_to(m, f"معرفك: {user_id}", reply_markup=kb)
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["سيارة", "سياره"])
-def vehicle_car(m):
-    uid = m.from_user.id
-    if "سيارة" in user_vehicles.get(uid, {}):
-        bot.reply_to(m, "🚗")
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["دراجة", "دراجه", "دراجة نارية", "دراجه ناريه"])
-def vehicle_motorcycle(m):
-    uid = m.from_user.id
-    if "دراجة نارية" in user_vehicles.get(uid, {}):
-        bot.reply_to(m, "🏍️")
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["طائرة", "طائره"])
-def vehicle_plane(m):
-    uid = m.from_user.id
-    if "طائرة" in user_vehicles.get(uid, {}):
-        bot.reply_to(m, "✈️")
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["حافلة", "حافله"])
-def vehicle_bus(m):
-    uid = m.from_user.id
-    if "حافلة" in user_vehicles.get(uid, {}):
-        bot.reply_to(m, "🚎")
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "صاروخ")
-def vehicle_rocket(m):
-    uid = m.from_user.id
-    if "صاروخ" in user_vehicles.get(uid, {}):
-        bot.reply_to(m, "🚀")
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["الكرة", "كرة"])
-def start_ball_game(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    ball_status[uid] = {
-        "has_ball": True,
-        "last_action": datetime.now(),
-        "ball_type": "كرة القدم",
-        "start_time": datetime.now(),
-        "stars_earned": 0,
-        "result": None,
-        "duration": 0
+    # أنماط خاصة
+    "الماروبوزو": {  # marubozu
+        "emoji": "🔷",
+        "direction": "حاسم",
+        "condition": lambda o, h, l, c: abs(o - c) > 0.9 * (h - l) and (abs(h - max(o,c)) < 0.1 * (h-l)) and (abs(l - min(o,c)) < 0.1 * (h-l))
+    },
+    "الدوجي": {  # doji
+        "emoji": "➕",
+        "direction": "محايد",
+        "condition": lambda o, h, l, c: abs(o - c) < 0.1 * (h - l)
+    },
+    "الدوجي طويل الأرجل": {  # long_legged_doji
+        "emoji": "🦵",
+        "direction": "محايد",
+        "condition": lambda o, h, l, c: abs(o - c) < 0.1 * (h - l) and ((h - max(o,c)) > 0.4*(h-l)) and ((min(o,c) - l) > 0.4*(h-l))
+    },
+    "الملقط العلوي": {  # tweezer_top
+        "emoji": "✂️",
+        "direction": "هبوطي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2: abs(h1 - h2) < 0.005 * h1 and c1 > o1 and c2 < o2
+    },
+    "الملقط السفلي": {  # tweezer_bottom
+        "emoji": "✂️",
+        "direction": "صعودي",
+        "condition": lambda o1, h1, l1, c1, o2, h2, l2, c2: abs(l1 - l2) < 0.005 * l1 and c1 < o1 and c2 > o2
     }
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
-    bot.reply_to(m, "دعنا نلعب معًا!", reply_markup=kb)
+}
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "تمرير")
-def pass_ball(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    if uid not in ball_status:
-        return
-    ball_status[uid]["last_action"] = datetime.now()
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
-    if ball_status[uid]["has_ball"]:
-        ball_status[uid]["has_ball"] = False
-        bot.reply_to(m, "مررت الكرة إلى رفاقك!", reply_markup=kb)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("📊 تحليل عملة", callback_data="select_currency")],
+        [InlineKeyboardButton("ℹ️ مساعدة", callback_data="help")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.message:
+        await update.message.reply_text(
+            "📈 بوت التحليل الفني المتقدم\n\n"
+            "مرحباً! أنا بوت التحليل الفني الذكي الذي يساعدك في تحليل العملات الرقمية.\n"
+            "اضغط على الزر أدناه لبدء التحليل:",
+            reply_markup=reply_markup
+        )
     else:
-        ball_status[uid]["has_ball"] = True
-        bot.reply_to(m, "مررت الكرة إليك!", reply_markup=kb)
+        await update.callback_query.edit_message_text(
+            "📈 بوت التحليل الفني المتقدم\n\n"
+            "مرحباً! أنا بوت التحليل الفني الذكي الذي يساعدك في تحليل العملات الرقمية.\n"
+            "اضغط على الزر أدناه لبدء التحليل:",
+            reply_markup=reply_markup
+        )
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["هدف", "تسجيل"])
-def score_goal(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    if uid not in ball_status or not ball_status[uid]["has_ball"]:
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    
+    if data == "select_currency":
+        await query.edit_message_text(
+            "🔍 الرجاء إدخال رمز العملة التي تريد تحليلها (مثال: BTC أو ETH أو BTCUSDT):",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")]])
+        )
+        context.user_data["awaiting_currency"] = True
         return
-    ball_status[uid]["last_action"] = datetime.now()
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("النتيجة", callback_data=f"show_result_{uid}"))
-    bot.reply_to(m, "⚽ هدف رائع!", reply_markup=kb)
+    
+    elif data == "main_menu":
+        await start(update, context)
+        return
+    
+    elif data.startswith("timeframe_"):
+        symbol = context.user_data.get("selected_symbol")
+        timeframe = data.split("_")[1]
+        await perform_analysis(update, symbol, timeframe, is_callback=True)
+        return
+    
+    elif data.startswith("refresh_"):
+        symbol = context.user_data.get("selected_symbol")
+        timeframe = data.split("_")[1]
+        await perform_analysis(update, symbol, timeframe, is_callback=True, refresh=True)
+        return
+    
+    elif data.startswith("full_"):
+        symbol = data.split("_")[1]
+        await full_analysis(update, context)
+        return
+    
+    elif data == "help":
+        await query.edit_message_text(
+            "📚 مساعدة:\n\n"
+            "1. اضغط على زر 'تحليل عملة'\n"
+            "2. أدخل رمز العملة (مثال: BTC أو ETH)\n"
+            "3. اختر الفترة الزمنية للتحليل\n"
+            "4. استعرض النتائج واتخذ قرارك\n\n"
+            "المميزات:\n"
+            "- توقع الأسعار مع نسبة ثقة\n"
+            "- تحليل 35+ نمط شمعة\n"
+            "- 10 مؤشرات فنية\n"
+            "- توصيات ذكية",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")]])
+        )
+        return
 
-@bot.message_handler(func=lambda m: m.text and m.text == "رصيده" and m.reply_to_message)
-def show_other_balance(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    target = m.reply_to_message.from_user
-    balance = user_balances.get(target.id, 0)
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("إهداء", callback_data=f"gift_start_{target.id}_{uid}"),
-        InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}")
-    )
-    bot.reply_to(m, f"الرصيد الخاص به: {balance} نجمة", reply_markup=kb)
-
-@bot.message_handler(func=lambda m: m.text and m.text.startswith("إهداء ") and m.reply_to_message)
-def gift_command(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    if m.reply_to_message.from_user.id == uid:
-        return
-    parts = m.text.split()
-    if len(parts) != 2 or not parts[1].isdigit():
-        return
-    amount = int(parts[1])
-    if amount <= 0:
-        return
-    balance = user_balances.get(uid, 0)
-    target_user = m.reply_to_message.from_user
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
-    if balance < amount:
-        bot.reply_to(m, "ليس لديك رصيد كافٍ!", reply_markup=kb)
-        return
-    user_balances[uid] = balance - amount
-    user_balances[target_user.id] = user_balances.get(target_user.id, 0) + amount
-    bot.reply_to(m, "تم الإهداء!", reply_markup=kb)
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "رصيدي")
-def show_my_balance(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    balance = user_balances.get(uid, 0)
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("الهدية اليومية", callback_data=f"daily_gift_{uid}"),
-        InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}")
-    )
-    bot.reply_to(m, f"الرصيد الخاص بك: {balance} نجمة", reply_markup=kb)
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "مسح" and m.reply_to_message)
-def delete_messages(m):
-    chat_id = m.chat.id
-    from_user = m.from_user
-    reply_msg = m.reply_to_message
-    if not (is_owner(chat_id, from_user.id) or is_admin(chat_id, from_user.id)):
-        return
-    try:
-        bot.delete_message(chat_id, reply_msg.message_id)
-        bot.delete_message(chat_id, m.message_id)
-    except:
-        pass
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["رفع مشرف", "ترقية", "ترقيه", "الترقية", "الترقيه"] and m.reply_to_message)
-def promote_admin(m):
-    chat_id = m.chat.id
-    from_user = m.from_user
-    target_user = m.reply_to_message.from_user
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{from_user.id}"))
-    if not is_owner(chat_id, from_user.id):
-        bot.reply_to(m, "هذا الأمر لمالك المجموعة فقط!", reply_markup=kb)
-        return
-    if is_admin(chat_id, target_user.id):
-        bot.reply_to(m, "هذا المستخدم مشرف بالفعل!", reply_markup=kb)
-        return
-    if promote_user(chat_id, target_user.id):
-        bot.reply_to(m, "تم رفعه كمشرف!", reply_markup=kb)
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("awaiting_currency"):
+        symbol = update.message.text.upper()
+        
+        # إذا لم يكن الرمز يحتوي على USDT، نضيفه تلقائياً
+        if not symbol.endswith("USDT") and len(symbol) <= 5:
+            symbol += "USDT"
+        
+        context.user_data["selected_symbol"] = symbol
+        context.user_data["awaiting_currency"] = False
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("15 دقيقة", callback_data="timeframe_15m"),
+                InlineKeyboardButton("1 ساعة", callback_data="timeframe_1h"),
+            ],
+            [
+                InlineKeyboardButton("4 ساعات", callback_data="timeframe_4h"),
+                InlineKeyboardButton("1 يوم", callback_data="timeframe_1d"),
+            ],
+            [
+                InlineKeyboardButton("🔙 رجوع", callback_data="select_currency"),
+            ]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"⏳ اختر الفترة الزمنية لتحليل {symbol}:",
+            reply_markup=reply_markup
+        )
     else:
-        bot.reply_to(m, "فشل في رفع العضو!", reply_markup=kb)
+        await update.message.reply_text(
+            "🚫 لم أفهم طلبك. الرجاء استخدام الأزرار للتفاعل مع البوت.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("القائمة الرئيسية", callback_data="main_menu")]])
+        )
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["عزل مشرف", "ازالة الاشراف", "إزالة الإشراف"] and m.reply_to_message)
-def demote_admin(m):
-    chat_id = m.chat.id
-    from_user = m.from_user
-    target_user = m.reply_to_message.from_user
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{from_user.id}"))
-    if not is_owner(chat_id, from_user.id):
-        bot.reply_to(m, "لا يمكنك استخدام ذلك الأمر.", reply_markup=kb)
+async def perform_analysis(update: Update, symbol: str, timeframe: str, is_callback=False, refresh=False):
+    if is_callback:
+        query = update.callback_query
+        await query.answer()
+    
+    analysis = get_analysis_data(symbol, timeframe)
+    if not analysis:
+        error_msg = "❌ فشل في جلب البيانات. الرجاء المحاولة لاحقاً."
+        if is_callback:
+            await query.edit_message_text(error_msg)
+        else:
+            await update.message.reply_text(error_msg)
         return
-    if not is_admin(chat_id, target_user.id):
-        bot.reply_to(m, "هذا المستخدم ليس مشرفًا!", reply_markup=kb)
-        return
-    if demote_user(chat_id, target_user.id):
-        bot.reply_to(m, "تم عزل الإشراف!", reply_markup=kb)
+    
+    report = generate_analysis_report(analysis)
+    
+    # أزرار بعد التحليل
+    keyboard = [
+        [
+            InlineKeyboardButton("🔄 تحديث التحليل", callback_data=f"refresh_{timeframe}"),
+            InlineKeyboardButton("⏳ تغيير الإطار الزمني", callback_data="select_currency"),
+        ],
+        [
+            InlineKeyboardButton("📊 تحليل شامل", callback_data=f"full_{symbol}"),
+            InlineKeyboardButton("🔙 رجوع", callback_data="main_menu"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if refresh:
+        await query.edit_message_text(report, reply_markup=reply_markup)
+    elif is_callback:
+        await query.edit_message_text(report, reply_markup=reply_markup)
     else:
-        bot.reply_to(m, "فشل في عزل الإشراف!", reply_markup=kb)
+        await update.message.reply_text(report, reply_markup=reply_markup)
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["طرد", "بنعال"] and m.reply_to_message)
-def kick_user(m):
-    chat_id = m.chat.id
-    from_user = m.from_user
-    target_user = m.reply_to_message.from_user
-    bot_id = bot.get_me().id
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{from_user.id}"))
-
-    if not (is_owner(chat_id, from_user.id) or is_admin(chat_id, from_user.id)):
-        bot.reply_to(m, "هذا الأمر للمشرفين أو المالك فقط!", reply_markup=kb)
-        return
-
-    if target_user.id == bot_id:
-        bot.reply_to(m, "عذرًا، لا يمكنني طرد نفسي!", reply_markup=kb)
-        return
-
-    if is_owner(chat_id, target_user.id):
-        bot.reply_to(m, "عذرًا، لا يمكنني طرد المالك!", reply_markup=kb)
-        return
-
-    try:
-        bot.kick_chat_member(chat_id, target_user.id)
-        bot.reply_to(m, f"تم طرد {target_user.first_name} من المجموعة بنجاح!", reply_markup=kb)
-    except:
-        bot.reply_to(m, "فشل في طرد العضو!", reply_markup=kb)
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["إلغاء الحظر", "الغاء الحظر"] and m.reply_to_message)
-def unban_user(m):
-    chat_id = m.chat.id
-    from_user = m.from_user
-    target_user = m.reply_to_message.from_user
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{from_user.id}"))
-
-    if not (is_owner(chat_id, from_user.id) or is_admin(chat_id, from_user.id)):
-        bot.reply_to(m, "هذا الأمر للمشرفين أو المالك فقط!", reply_markup=kb)
-        return
-
-    try:
-        bot.unban_chat_member(chat_id, target_user.id)
-        bot.reply_to(m, "رجعت الحرية! يمكنه الإنضمام مرة أخرى من خلال رابط الدعوة.", reply_markup=kb)
-    except:
-        bot.reply_to(m, "فشل في إلغاء الحظر!", reply_markup=kb)
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["الأوامر", "اوامر"])
-def admin_commands(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    if not is_owner(chat_id, uid):
-        return
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("رسالة الترحيب", callback_data=f"welcome_msg_{uid}"),
-        InlineKeyboardButton("الإحصائيات", callback_data=f"stats_{uid}"),
-        InlineKeyboardButton("الأدوات", callback_data=f"tools_{uid}")
-    )
-    bot.reply_to(m, "أهلًا، يمكنك تخصيص المجموعة ومراجعتها.", reply_markup=kb)
-
-@bot.message_handler(content_types=['new_chat_members'])
-def handle_new_member(m):
-    chat_id = m.chat.id
-    if chat_id in welcome_messages:
-        msg = welcome_messages[chat_id]
-        if msg["type"] == "text":
-            bot.send_message(chat_id, msg["content"])
-        elif msg["type"] == "photo":
-            bot.send_photo(chat_id, msg["content"], caption=msg["caption"])
-        elif msg["type"] == "voice":
-            bot.send_voice(chat_id, msg["content"], caption=msg["caption"])
-
-@bot.message_handler(content_types=['left_chat_member'])
-def handle_left_member(m):
-    chat_id = m.chat.id
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{m.from_user.id}"))
-    bot.reply_to(m, "توصل بالسلامة", reply_markup=kb)
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "حيواناتي")
-def show_user_animals(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    animals = user_animals.get(uid, {})
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
-    if not animals:
-        bot.send_message(chat_id, "لم تشترِ أي حيوانات بعد.", reply_markup=kb)
-        return
-    lines = []
-    line = []
-    count = 0
-    for animal, price in animals.items():
-        line.append(f"{animal} بـ {price}")
-        count += 1
-        if count % 3 == 0:
-            lines.append(" | ".join(line))
-            line = []
-    if line:
-        lines.append(" | ".join(line))
-    text = "حيواناتك:\n" + "\n".join(lines)
-    bot.send_message(chat_id, text, reply_markup=kb)
-
-# --- Feed animal ---
-FEED_COST = 25
-FEED_COOLDOWN = timedelta(hours=24)
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("إطعام "))
-def feed_animal(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    text = m.text.strip()
-    parts = text.split(maxsplit=1)
-    if len(parts) < 2:
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
-        bot.reply_to(m, "اكتب: إطعام [اسم الحيوان]", reply_markup=kb)
-        return
-    animal_name = parts[1].strip()
-    user_animals_set = user_animals.get(uid, {})
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
-
-    normalized_animal = animal_name
-    if not animal_name.startswith("ال"):
-        normalized_animal = "ال" + animal_name
-    if animal_name.startswith("ال"):
-        normalized_animal = animal_name[2:]
-
-    if normalized_animal not in store_animals and animal_name not in store_animals:
-        bot.reply_to(m, "تأكد من أن اسم الحيوان صحيح.", reply_markup=kb)
-        return
-
-    animal_key = animal_name if animal_name in store_animals else normalized_animal
-    if animal_key not in user_animals_set:
-        bot.reply_to(m, "مهلًا، أنت لا تمتلك ذلك الحيوان.", reply_markup=kb)
-        return
-
-    last_feed = last_feed_time.get(uid, {}).get(animal_key)
-    if last_feed and datetime.now() < last_feed + FEED_COOLDOWN:
-        bot.reply_to(m, "لا يمكنك إطعام الحيوان مرة أخرى! حاول لاحقًا.", reply_markup=kb)
-        return
-
-    balance = user_balances.get(uid, 0)
-    if balance < FEED_COST:
-        bot.reply_to(m, "بحاجة إلى 25 نجمة لأداء هذه العملية. تأكد أنك تمتلك الرصيد الكافي وحاول مرة أخرى.", reply_markup=kb)
-        return
-
-    user_balances[uid] = balance - FEED_COST
-    last_feed_time.setdefault(uid, {})
-    last_feed_time[uid][animal_key] = datetime.now()
-    msg = bot.reply_to(m, f"يتم إطعام {animal_name}...", reply_markup=kb)
-
-    def update_message():
-        time.sleep(19)
-        try:
-            bot.edit_message_text(f"تم إطعام {animal_name}!", chat_id, msg.message_id, reply_markup=kb)
-        except:
-            pass
-
-    threading.Thread(target=update_message).start()
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["المتجر", "متجر"])
-def store_start(m):
-    uid = m.from_user.id
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("الحيوانات", callback_data=f"store_animals_{uid}"),
-        InlineKeyboardButton("الأطعمة", callback_data=f"store_foods_{uid}"),
-        InlineKeyboardButton("المركبات", callback_data=f"store_vehicles_{uid}"),
-        InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}")
-    )
-    bot.reply_to(m, "اشترِ منتجات متنوعة من المتجر!", reply_markup=kb)
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["كلمات", "الكلمات"])
-def start_words_game(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    word = random.choice(arabic_words)
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("تخطي", callback_data=f"skip_word_{uid}"))
-    sent = bot.reply_to(m, f"أعد إرسال الكلمة، وأحصل على نجوم إضافية: {word}", reply_markup=kb)
-    words_waiting[uid] = {"word": normalize_word(word), "message_id": sent.message_id, "chat_id": chat_id, "sent_time": datetime.now()}
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "تمرين")
-def start_training(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    if uid not in ball_status:
-        return
-    now = datetime.now()
-    today = now.date()
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
-    if uid in ongoing_trainings and ongoing_trainings[uid]["last_training_date"] == today:
-        bot.reply_to(m, "رفاقك متمرنون بالفعل، حاول لاحقًا!", reply_markup=kb)
-        return
-    if uid in ongoing_trainings and ongoing_trainings[uid]["end_time"] > now:
-        bot.reply_to(m, "مهلًا، لم يتم التمرين بعد!", reply_markup=kb)
-        return
-    ongoing_trainings[uid] = {"end_time": now + timedelta(seconds=10), "last_training_date": today}
-    bot.reply_to(m, "جاري التمرين. انتظر 10 ثوانٍ!", reply_markup=kb)
-
-@bot.message_handler(func=lambda m: m.text and m.from_user.id in waiting_gift and m.text.isdigit())
-def process_gift_amount(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    amount = int(m.text)
-    if amount <= 0:
-        return
-    gift_data = waiting_gift.get(uid)
-    if not gift_data:
-        return
-    balance = user_balances.get(uid, 0)
-    target_id = gift_data["target_id"]
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
-    if balance < amount:
-        bot.reply_to(m, "لا تمتلك الرصيد الكافي!", reply_markup=kb)
-        del waiting_gift[uid]
-        return
-    user_balances[uid] = balance - amount
-    user_balances[target_id] = user_balances.get(target_id, 0) + amount
-    bot.reply_to(m, "تم الإهداء!", reply_markup=kb)
-    del waiting_gift[uid]
-
-@bot.message_handler(content_types=['text', 'photo', 'voice'], func=lambda m: m.from_user.id in waiting_welcome)
-def set_welcome_message(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    if uid not in waiting_welcome:
-        return
-    welcome_data = waiting_welcome[uid]
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
-    if m.text:
-        welcome_messages[chat_id] = {"type": "text", "content": m.text, "caption": None}
-    elif m.photo:
-        welcome_messages[chat_id] = {"type": "photo", "content": m.photo[-1].file_id, "caption": m.caption}
-    elif m.voice:
-        welcome_messages[chat_id] = {"type": "voice", "content": m.voice.file_id, "caption": m.caption}
-    bot.reply_to(m, "تم تعيين رسالة الترحيب!", reply_markup=kb)
-    del waiting_welcome[uid]
-
-@bot.message_handler(func=lambda m: m.text and m.from_user.id in waiting_admin_action)
-def process_admin_action(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    if uid not in waiting_admin_action:
-        return
-    action_data = waiting_admin_action[uid]
-    action = action_data["action"]
-    username = m.text.strip()
-    if not username.startswith("@"):
-        username = f"@{username}"
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
+async def full_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
     
-    target_user_id = get_user_id_from_username(chat_id, username)
-    if not target_user_id:
-        bot.reply_to(m, "مهلًا، المستخدم ليس عضوًا هنا.", reply_markup=kb)
-        del waiting_admin_action[uid]
-        return
-
-    if action == "promote":
-        if is_admin(chat_id, target_user_id):
-            bot.reply_to(m, "مهلًا، المستخدم مشرف بالفعل.", reply_markup=kb)
-        elif promote_user(chat_id, target_user_id):
-            bot.reply_to(m, "تم رفعه مشرفًا!", reply_markup=kb)
-        else:
-            bot.reply_to(m, "فشل في رفع العضو!", reply_markup=kb)
-    elif action == "demote":
-        if not is_admin(chat_id, target_user_id):
-            bot.reply_to(m, "هذا المستخدم ليس مشرفًا!", reply_markup=kb)
-        elif demote_user(chat_id, target_user_id):
-            bot.reply_to(m, "تم عزله من الإشراف!", reply_markup=kb)
-        else:
-            bot.reply_to(m, "فشل في عزل الإشراف!", reply_markup=kb)
-    del waiting_admin_action[uid]
-
-@bot.message_handler(func=lambda m: m.text and m.from_user.id in words_waiting)
-def check_word_answer(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    user_data = words_waiting.get(uid)
-    if not user_data:
-        return
-    input_word = m.text.strip().lower()
-    expected_word = user_data["word"]
-    normalized_input = normalize_word(input_word)
-    kb = InlineKeyboardMarkup()
-    if input_word == expected_word or normalized_input == expected_word:
-        user_balances[uid] = user_balances.get(uid, 0) + 20
-        kb.add(
-            InlineKeyboardButton("كلمة جديدة", callback_data=f"new_word_{uid}"),
-            InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}")
-        )
-        bot.reply_to(m, "صحيح! حصلت على 20 نجوم!", reply_markup=kb)
-        try:
-            bot.delete_message(chat_id, user_data["message_id"])
-        except:
-            pass
-        del words_waiting[uid]
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["فيس", "فيسبوك"])
-def request_facebook_url(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
-    bot_reply = bot.reply_to(m, "أرسل رابط مقطع الفيديو وسأقوم بتنزيله بسرعة..", reply_markup=kb)
-    waiting_media[uid] = {"chat_id": chat_id, "platform": "facebook", "message_id": bot_reply.message_id}
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith(("فيس ", "فيس،", "فيسبوك ", "فيسبوك،")))
-def download_facebook_video(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    text = m.text.strip()
-    parts = text.split(maxsplit=1)
-    if len(parts) < 2:
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
-        bot.reply_to(m, "يرجى إرسال رابط الفيديو!", reply_markup=kb)
-        return
-    url = parts[1].strip()
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إلغاء", callback_data=f"close_msg_{uid}"))
-    bot_reply = bot.reply_to(m, "جاري التحميل... انتظر لحظة", reply_markup=kb)
+    symbol = query.data.split("_")[1]
+    timeframes = ["15m", "1h", "4h", "1d"]
+    reports = []
     
-    def process_download():
-        media_url = download_media(url, "facebook")
-        if media_url:
-            try:
-                bot.edit_message_text("تم التحميل!", chat_id, bot_reply.message_id)
-                bot.send_video(chat_id, media_url, reply_to_message_id=m.message_id)
-            except:
-                bot.edit_message_text("فشل في تحميل الفيديو!", chat_id, bot_reply.message_id, reply_markup=kb)
-        else:
-            bot.edit_message_text("فشل في تحميل الفيديو!", chat_id, bot_reply.message_id, reply_markup=kb)
+    for tf in timeframes:
+        analysis = get_analysis_data(symbol, tf)
+        if analysis:
+            recommendation = generate_recommendation(analysis)
+            prediction = calculate_price_prediction(analysis, analysis['timeframe'])
+            reports.append({
+                'timeframe': tf,
+                'price': analysis['indicators']['current_price'],
+                'prediction': prediction['predicted_price'],
+                'confidence': prediction['confidence'],
+                'trend': analysis['trend'],
+                'recommendation': recommendation['decision'],
+                'patterns': analysis['candle_patterns']
+            })
     
-    threading.Thread(target=process_download).start()
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith(("يوت ", "يوت،")))
-def download_youtube_audio(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    text = m.text.strip()
-    parts = text.split(maxsplit=1)
-    if len(parts) < 2:
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
-        bot.reply_to(m, "يرجى إرسال نص البحث!", reply_markup=kb)
+    if not reports:
+        await query.edit_message_text("❌ فشل في جلب البيانات")
         return
-    search_query = parts[1].strip()
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
-    bot_reply = bot.reply_to(m, "جاري البحث عن وتحميل الصوت... 🎧", reply_markup=kb)
-
-    async def download_and_send():
-        ydl = YoutubeDL(YDL_OPTIONS)
-        try:
-            info = await asyncio.to_thread(ydl.extract_info, f"ytsearch:{search_query}", download=True)
-            if 'entries' in info and len(info['entries']) > 0:
-                info = info['entries'][0]
-                file_path = ydl.prepare_filename(info).replace(".webm", ".mp3").replace(".m4a", ".mp3")
-                bot.edit_message_text("تم التحميل!", chat_id, bot_reply.message_id, reply_markup=kb)
-                bot.send_audio(
-                    chat_id=chat_id,
-                    audio=open(file_path, 'rb'),
-                    title=info.get("title"),
-                    performer=info.get("uploader"),
-                    reply_to_message_id=m.message_id
-                )
-                os.remove(file_path)
-            else:
-                bot.edit_message_text("🚫 لم يتم العثور على نتائج للبحث.", chat_id, bot_reply.message_id, reply_markup=kb)
-        except Exception as e:
-            bot.edit_message_text(f"🚫 حدث خطأ أثناء التحميل: {str(e)}", chat_id, bot_reply.message_id, reply_markup=kb)
-
-    threading.Thread(target=lambda: asyncio.run(download_and_send()), daemon=True).start()
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith(("انستا ", "انستا،", "إنستا ", "إنستا،", "انستغرام ", "انستغرام،", "إنستغرام ", "إنستغرام،", "أنستغرام ", "أنستغرام،")))
-def download_instagram_media(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    text = m.text.strip()
-    parts = text.split(maxsplit=1)
-    if len(parts) < 2:
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{uid}"))
-        bot.reply_to(m, "يرجى إرسال رابط الميديا!", reply_markup=kb)
-        return
-    url = parts[1].strip()
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إلغاء", callback_data=f"close_msg_{uid}"))
-    bot_reply = bot.reply_to(m, "جاري التحميل... انتظر لحظة", reply_markup=kb)
     
-    def process_download():
-        media_url = download_media(url, "instagram")
-        if media_url:
-            try:
-                bot.edit_message_text("تم التحميل!", chat_id, bot_reply.message_id)
-                if media_url.endswith(('.jpg', '.png')):
-                    bot.send_photo(chat_id, media_url, reply_to_message_id=m.message_id)
-                else:
-                    bot.send_video(chat_id, media_url, reply_to_message_id=m.message_id)
-            except:
-                bot.edit_message_text("فشل في تحميل الميديا!", chat_id, bot_reply.message_id, reply_markup=kb)
+    report = "📊 التحليل الشامل\n\n"
+    for r in reports:
+        report += f"""⏳ {r['timeframe']}:
+💰 السعر: {r['price']:.4f}
+🎯 التوقع: {r['prediction']:.4f} (ثقة: {r['confidence']}%)
+📈 الاتجاه: {r['trend']}
+💡 التوصية: {r['recommendation']}
+🔍 أنماط الشموع:
+"""
+        if r['patterns'] and r['patterns'][0] != "🔍 لا توجد أنماط واضحة":
+            for pattern in r['patterns']:
+                report += f"  - {pattern}\n"
         else:
-            bot.edit_message_text("فشل في تحميل الميديا!", chat_id, bot_reply.message_id, reply_markup=kb)
+            report += "  - لا توجد أنماط واضحة\n"
+        report += "────────────────────\n"
     
-    threading.Thread(target=process_download).start()
-
-@bot.message_handler(func=lambda m: m.text and m.from_user.id in waiting_media)
-def process_media_url(m):
-    uid = m.from_user.id
-    chat_id = m.chat.id
-    media_data = waiting_media.get(uid)
-    if not media_data:
-        return
-    platform = media_data["platform"]
-    url = m.text.strip()
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("إلغاء", callback_data=f"close_msg_{uid}"))
-    bot_reply = bot.reply_to(m, "جاري التحميل... انتظر لحظة", reply_markup=kb)
+    keyboard = [
+        [InlineKeyboardButton("🔙 رجوع", callback_data=f"timeframe_1d_{symbol}")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
-    def process_download():
-        media_url = download_media(url, platform)
-        if media_url:
-            try:
-                bot.edit_message_text("تم التحميل!", chat_id, bot_reply.message_id)
-                if platform == "facebook":
-                    bot.send_video(chat_id, media_url, reply_to_message_id=m.message_id)
-                elif platform == "instagram":
-                    if media_url.endswith(('.jpg', '.png')):
-                        bot.send_photo(chat_id, media_url, reply_to_message_id=m.message_id)
-                    else:
-                        bot.send_video(chat_id, media_url, reply_to_message_id=m.message_id)
-                elif platform == "youtube":
-                    bot.send_audio(chat_id, media_url, reply_to_message_id=m.message_id)
-            except:
-                bot.edit_message_text(f"فشل في تحميل {'الفيديو' if platform == 'facebook' else 'الميديا' if platform == 'instagram' else 'الصوت'}!", chat_id, bot_reply.message_id, reply_markup=kb)
-        else:
-            bot.edit_message_text(f"فشل في تحميل {'الفيديو' if platform == 'facebook' else 'الميديا' if platform == 'instagram' else 'الصوت'}!", chat_id, bot_reply.message_id, reply_markup=kb)
+    await query.edit_message_text(report, reply_markup=reply_markup)
+
+def get_analysis_data(symbol: str, timeframe: str):
+    klines = get_klines(symbol, timeframe, limit=100)
+    if not klines:
+        return None
     
-    threading.Thread(target=process_download).start()
-    del waiting_media[uid]
+    candles = {
+        'open': [float(k[1]) for k in klines],
+        'high': [float(k[2]) for k in klines],
+        'low': [float(k[3]) for k in klines],
+        'close': [float(k[4]) for k in klines],
+        'volume': [float(k[5]) for k in klines]
+    }
+    
+    indicators = calculate_technical_indicators(candles)
+    candle_patterns = detect_candle_patterns(candles)
+    trend_analysis = analyze_trend(candles, indicators, candle_patterns)
+    
+    return {
+        'symbol': symbol,
+        'timeframe': timeframe,
+        'candles': candles,
+        'candle_patterns': candle_patterns,
+        'trend': trend_analysis['direction'],
+        'trend_details': trend_analysis['details'],
+        'support_resistance': calculate_support_resistance(candles),
+        'volume_analysis': analyze_volume(candles),
+        'indicators': indicators
+    }
 
-# --- Message counter ---
-@bot.message_handler(content_types=['text'])
-def count_messages(m):
-    chat_id = m.chat.id
-    user_id = m.from_user.id
-    user_messages.setdefault(chat_id, {})
-    user_messages[chat_id][user_id] = user_messages[chat_id].get(user_id, 0) + 1
-
-# --- Callback Query Handler ---
-@bot.callback_query_handler(func=lambda c: True)
-def handle_all_callbacks(c):
-    chat_id = c.message.chat.id
-    user_id = c.from_user.id
-    data = c.data
-
-    target_uid = None
-    if "_" in data:
-        parts = data.split("_")
-        try:
-            target_uid = int(parts[-1]) if parts[-1].isdigit() else None
-        except ValueError:
-            target_uid = None
-
-    if not (is_owner(chat_id, user_id) or is_admin(chat_id, user_id) or (target_uid and user_id == target_uid)):
-        bot.answer_callback_query(c.id)
-        return
-
-    if data.startswith("close_msg_"):
-        try:
-            bot.delete_message(chat_id, c.message.message_id)
-        except:
-            bot.answer_callback_query(c.id)
-        return
-
-    if data.startswith("show_result_"):
-        target_uid = int(data.split("_")[2])
-        if target_uid not in ball_status:
-            bot.answer_callback_query(c.id)
-            return
-        results = ["تعادل", "تسجيل", "إخفاق"]
-        result = random.choice(results)
-        stars = {"تعادل": 10, "تسجيل": 25, "إخفاق": 0}[result]
-        ball_status[target_uid]["stars_earned"] = stars
-        ball_status[target_uid]["result"] = result
-        start_time = ball_status[target_uid]["start_time"]
-        duration = int((datetime.now() - start_time).total_seconds())
-        ball_status[target_uid]["duration"] = duration
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("سحب", callback_data=f"claim_stars_{target_uid}"),
-            InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{target_uid}")
-        )
-        bot.edit_message_text(
-            f"النتيجة: {result}\n"
-            f"مدة المباراة: {duration} ثانية\n"
-            f"الربح: {stars} نجمة",
-            chat_id, c.message.message_id, reply_markup=kb
-        )
-
-    elif data.startswith("claim_stars_"):
-        target_uid = int(data.split("_")[2])
-        if target_uid not in ball_status:
-            bot.answer_callback_query(c.id)
-            return
-        stars = ball_status[target_uid]["stars_earned"]
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{target_uid}"))
-        if stars == 0:
-            bot.edit_message_text(
-                "ليس لديك ما تسحبه!",
-                chat_id, c.message.message_id, reply_markup=kb
-            )
-        else:
-            user_balances[target_uid] = user_balances.get(target_uid, 0) + stars
-            bot.edit_message_text(
-                f"تهانينا! لقد سحبت {stars} نجمة إلى رصيدك.",
-                chat_id, c.message.message_id, reply_markup=kb
-            )
-        del ball_status[target_uid]
-
-    elif data.startswith("gift_start_"):
-        target_id = int(data.split("_")[2])
-        initiator_id = int(data.split("_")[3])
-        waiting_gift[user_id] = {"chat_id": chat_id, "message_id": c.message.message_id, "target_id": target_id}
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"gift_back_{target_id}_{user_id}"))
-        bot.edit_message_text("ما هي كمية النجوم التي تريد إهداءها له؟", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("gift_back_"):
-        target_id = int(data.split("_")[2])
-        initiator_id = int(data.split("_")[3])
-        balance = user_balances.get(target_id, 0)
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("إهداء", callback_data=f"gift_start_{target_id}_{user_id}"),
-            InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}")
-        )
-        bot.edit_message_text(f"الرصيد الخاص به: {balance} نجمة", chat_id, c.message.message_id, reply_markup=kb)
-        if user_id in waiting_gift:
-            del waiting_gift[user_id]
-
-    elif data.startswith("daily_gift_"):
-        target_uid = int(data.split("_")[2])
-        if user_id != target_uid:
-            bot.answer_callback_query(c.id)
-            return
-        now = datetime.now().date()
-        last_gift = user_gifts.get(target_uid)
-        kb = InlineKeyboardMarkup()
-        if last_gift == now:
-            kb.add(InlineKeyboardButton("الرجوع", callback_data=f"balance_back_{target_uid}"))
-            bot.edit_message_text("محاولات كثيرة! حاول مرة أخرى غدًا.", chat_id, c.message.message_id, reply_markup=kb)
-            return
-        user_balances[target_uid] = user_balances.get(target_uid, 0) + 25
-        user_gifts[target_uid] = now
-        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"balance_back_{target_uid}"))
-        bot.edit_message_text("تهانينا! حصلت على 25 نجمة!", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("balance_back_"):
-        target_uid = int(data.split("_")[2])
-        balance = user_balances.get(target_uid, 0)
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("الهدية اليومية", callback_data=f"daily_gift_{target_uid}"),
-            InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{target_uid}")
-        )
-        bot.edit_message_text(f"الرصيد الخاص بك: {balance} نجمة", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("welcome_msg_"):
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"admin_commands_{user_id}"))
-        if chat_id in welcome_messages:
-            kb.add(InlineKeyboardButton("تعديل", callback_data=f"edit_welcome_{user_id}"))
-        else:
-            waiting_welcome[user_id] = {"chat_id": chat_id, "message_id": c.message.message_id}
-            bot.edit_message_text(
-                "أرسل الرسالة التي تريدني أن أرسلها عند انضمام أعضاء جدد:",
-                chat_id, c.message.message_id, reply_markup=kb
-            )
-        if chat_id in welcome_messages:
-            bot.edit_message_text(
-                "تم تعيين رسالة الترحيب بالفعل.",
-                chat_id, c.message.message_id, reply_markup=kb
-            )
-
-    elif data.startswith("edit_welcome_"):
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"admin_commands_{user_id}"))
-        bot.edit_message_text(
-            "أرسل الرسالة التي تريدني أن أرسلها عند انضمام أعضاء جدد:",
-            chat_id, c.message.message_id, reply_markup=kb
-        )
-        waiting_welcome[user_id] = {"chat_id": chat_id, "message_id": c.message.message_id}
-
-    elif data.startswith("admin_commands_"):
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("رسالة الترحيب", callback_data=f"welcome_msg_{user_id}"),
-            InlineKeyboardButton("الإحصائيات", callback_data=f"stats_{user_id}"),
-            InlineKeyboardButton("الأدوات", callback_data=f"tools_{user_id}")
-        )
-        bot.edit_message_text("أهلًا، يمكنك تخصيص المجموعة ومراجعتها.", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("tools_"):
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("المسح", callback_data=f"delete_tool_{user_id}"),
-            InlineKeyboardButton("الترقية", callback_data=f"promote_tool_{user_id}"),
-            InlineKeyboardButton("الطرد", callback_data=f"kick_tool_{user_id}"),
-            InlineKeyboardButton("عزل مشرف", callback_data=f"demote_tool_{user_id}"),
-            InlineKeyboardButton("الرجوع", callback_data=f"admin_commands_{user_id}")
-        )
-        bot.edit_message_text("طريقة جديدة للتعامل مع أعضائك!\nالمسح | الترقية | الطرد | عزل مشرف", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("delete_tool_"):
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"tools_{user_id}"))
-        bot.edit_message_text("يكفي أن ترسل مسح كرد على رسالة ليتم حذفها.", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("promote_tool_"):
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("الرجع", callback_data=f"tools_{user_id}"))
-        bot.edit_message_text("يكفي أن ترسل رفع مشرف كرد على رسالة المستخدم لرفعه مشرفا.", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("kick_tool_"):
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"tools_{user_id}"))
-        bot.edit_message_text(
-            "إحظر أي شخص مخالف للقوانين بضغطة واحدة؛ عن طريق إرسال طرد كرد على رسالته.",
-            chat_id, c.message.message_id, reply_markup=kb
-        )
-
-    elif data.startswith("demote_tool_"):
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"tools_{user_id}"))
-        bot.edit_message_text(
-            "أزل الإشراف عن أي مشرف، بالرد على رسالته بـ عزل مشرف.",
-            chat_id, c.message.message_id, reply_markup=kb
-        )
-
-    elif data.startswith("stats_"):
-        try:
-            member_count = bot.get_chat_member_count(chat_id)
-            admins = bot.get_chat_administrators(chat_id)
-            admin_count = len(admins)
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("الرجوع", callback_data=f"admin_commands_{user_id}"))
-            bot.edit_message_text(
-                f"الأعضاء: {member_count}\n"
-                f"المشرفون: {admin_count}",
-                chat_id, c.message.message_id, reply_markup=kb
-            )
-        except:
-            bot.answer_callback_query(c.id)
-
-    elif data.startswith("store_animals_"):
-        kb = InlineKeyboardMarkup(row_width=3)
-        buttons = [InlineKeyboardButton(animal, callback_data=f"buy_animal_{animal}_{user_id}") for animal in store_animals.keys() if not animal.startswith("ال")]
-        for i in range(0, len(buttons), 3):
-            kb.add(*buttons[i:i+3])
-        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}"))
-        bot.edit_message_text("اشترِ حيوانات أليفة رائعة!", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("store_foods_"):
-        kb = InlineKeyboardMarkup(row_width=3)
-        buttons = [InlineKeyboardButton(food, callback_data=f"buy_food_{food}_{user_id}") for food in store_foods.keys()]
-        for i in range(0, len(buttons), 3):
-            kb.add(*buttons[i:i+3])
-        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}"))
-        bot.edit_message_text("اشترِ أطعمة لذيذة!", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("store_vehicles_"):
-        kb = InlineKeyboardMarkup(row_width=3)
-        buttons = [InlineKeyboardButton(vehicle, callback_data=f"buy_vehicle_{vehicle}_{user_id}") for vehicle in store_vehicles.keys()]
-        for i in range(0, len(buttons), 3):
-            kb.add(*buttons[i:i+3])
-        kb.add(InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}"))
-        bot.edit_message_text("اشترِ مركبات ممتعة!", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("store_back_"):
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("الحيوانات", callback_data=f"store_animals_{user_id}"),
-            InlineKeyboardButton("الأطعمة", callback_data=f"store_foods_{user_id}"),
-            InlineKeyboardButton("المركبات", callback_data=f"store_vehicles_{user_id}"),
-            InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}")
-        )
-        bot.edit_message_text("اشترِ منتجات متنوعة من المتجر!", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("buy_animal_"):
-        animal = data.split("_")[2]
-        price = store_animals.get(animal)
-        if not price:
-            bot.answer_callback_query(c.id)
-            return
-        user_animals.setdefault(user_id, {})
-        if animal in user_animals[user_id] or f"ال{animal}" in user_animals[user_id]:
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
-            bot.edit_message_text("أنت تمتلك هذا الحيوان بالفعل!", chat_id, c.message.message_id, reply_markup=kb)
-            return
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("شراء", callback_data=f"confirm_buy_animal_{animal}_{user_id}"),
-            InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}")
-        )
-        bot.edit_message_text(f"هل تريد شراء {animal} بـ {price} نجمة؟", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("buy_food_"):
-        food = data.split("_")[2]
-        price = store_foods.get(food)
-        if not price:
-            bot.answer_callback_query(c.id)
-            return
-        user_foods.setdefault(user_id, {})
-        if food in user_foods[user_id]:
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
-            bot.edit_message_text("أنت تمتلك هذا الطعام بالفعل!", chat_id, c.message.message_id, reply_markup=kb)
-            return
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("شراء", callback_data=f"confirm_buy_food_{food}_{user_id}"),
-            InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}")
-        )
-        bot.edit_message_text(f"هل تريد شراء {food} بـ {price} نجمة؟", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("buy_vehicle_"):
-        vehicle = data.split("_")[2]
-        price = store_vehicles.get(vehicle)
-        if not price:
-            bot.answer_callback_query(c.id)
-            return
-        user_vehicles.setdefault(user_id, {})
-        if vehicle in user_vehicles[user_id]:
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
-            bot.edit_message_text("أنت تمتلك هذه المركبة بالفعل!", chat_id, c.message.message_id, reply_markup=kb)
-            return
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("شراء", callback_data=f"confirm_buy_vehicle_{vehicle}_{user_id}"),
-            InlineKeyboardButton("الرجوع", callback_data=f"store_back_{user_id}")
-        )
-        bot.edit_message_text(f"هل تريد شراء {vehicle} بـ {price} نجمة؟", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("confirm_buy_animal_"):
-        animal = data.split("_")[2]
-        price = store_animals.get(animal)
-        if not price:
-            bot.answer_callback_query(c.id)
-            return
-        balance = user_balances.get(user_id, 0)
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
-        if balance < price:
-            bot.edit_message_text("ليس لديك رصيد كافٍ!", chat_id, c.message.message_id, reply_markup=kb)
-            return
-        user_animals[user_id][animal] = price
-        user_balances[user_id] = balance - price
-        bot.edit_message_text(f"تهانينا! اشتريت {animal}!", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("confirm_buy_food_"):
-        food = data.split("_")[2]
-        price = store_foods.get(food)
-        if not price:
-            bot.answer_callback_query(c.id)
-            return
-        balance = user_balances.get(user_id, 0)
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
-        if balance < price:
-            bot.edit_message_text("ليس لديك رصيد كافٍ!", chat_id, c.message.message_id, reply_markup=kb)
-            return
-        user_foods[user_id][food] = price
-        user_balances[user_id] = balance - price
-        bot.edit_message_text(f"تهانينا! اشتريت {food}!", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("confirm_buy_vehicle_"):
-        vehicle = data.split("_")[2]
-        price = store_vehicles.get(vehicle)
-        if not price:
-            bot.answer_callback_query(c.id)
-            return
-        balance = user_balances.get(user_id, 0)
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("إغلاق", callback_data=f"close_msg_{user_id}"))
-        if balance < price:
-            bot.edit_message_text("ليس لديك رصيد كافٍ!", chat_id, c.message.message_id, reply_markup=kb)
-            return
-        user_vehicles[user_id][vehicle] = price
-        user_balances[user_id] = balance - price
-        bot.edit_message_text(f"تهانينا! اشتريت {vehicle}!", chat_id, c.message.message_id, reply_markup=kb)
-
-    elif data.startswith("new_word_"):
-        target_uid = int(data.split("_")[2])
-        if user_id != target_uid:
-            bot.answer_callback_query(c.id)
-            return
-        word = random.choice(arabic_words)
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("تخطي", callback_data=f"skip_word_{target_uid}"))
-        bot.edit_message_text(
-            f"أعد إرسال الكلمة، وأحصل على نجوم إضافية: {word}",
-            chat_id, c.message.message_id, reply_markup=kb
-        )
-        words_waiting[target_uid] = {
-            "word": normalize_word(word),
-            "message_id": c.message.message_id,
-            "chat_id": chat_id,
-            "sent_time": datetime.now()
+def analyze_trend(candles, indicators, candle_patterns):
+    """
+    تحليل الاتجاه باستخدام المؤشرات الفنية وأنماط الشموع مع التركيز على الإشارات الأقوى
+    """
+    closes = candles['close']
+    highs = candles['high']
+    lows = candles['low']
+    volumes = candles['volume']
+    
+    # 1. تحليل المتوسطات المتحركة (وزن عالي)
+    ma_short = sum(closes[-5:]) / 5
+    ma_medium = sum(closes[-13:]) / 13
+    ma_long = sum(closes[-50:]) / 50
+    
+    ma_bullish = ma_short > ma_medium > ma_long
+    ma_bearish = ma_short < ma_medium < ma_long
+    
+    # 2. تحليل MACD (وزن عالي)
+    macd_bullish = indicators['macd_line'] > indicators['signal_line']
+    macd_strength = abs(indicators['macd_line'] - indicators['signal_line'])
+    
+    # 3. تحليل RSI (وزن متوسط)
+    rsi = indicators['rsi']
+    rsi_bullish = rsi < 30
+    rsi_bearish = rsi > 70
+    
+    # 4. تحليل بولينجر باند (وزن متوسط)
+    price = indicators['current_price']
+    bb = indicators['bollinger']
+    bb_bullish = price < bb['lower']
+    bb_bearish = price > bb['upper']
+    
+    # 5. تحليل أنماط الشموع (وزن عالي إذا كانت أنماط قوية)
+    strong_bullish_patterns = [p for p in candle_patterns if "صعودي قوي" in p or "hammer" in p or "bullish_engulfing" in p]
+    strong_bearish_patterns = [p for p in candle_patterns if "هبوطي قوي" in p or "shooting_star" in p or "bearish_engulfing" in p]
+    
+    # 6. تحليل الحجم (وزن منخفض إلا إذا كان مرتفع جداً)
+    volume_ratio = indicators['volume_ratio']
+    high_volume = volume_ratio > 2.0
+    
+    # 7. تحليل Stochastic (وزن منخفض)
+    stoch = indicators['stochastic']
+    stoch_bullish = stoch < 20
+    stoch_bearish = stoch > 80
+    
+    # تحديد أقوى الإشارات
+    strong_bullish_signals = 0
+    strong_bearish_signals = 0
+    
+    # إشارات صعودية قوية
+    if ma_bullish: strong_bullish_signals += 1.5
+    if macd_bullish and macd_strength > 0.002 * price: strong_bullish_signals += 1.5
+    if rsi_bullish: strong_bullish_signals += 1
+    if bb_bullish: strong_bullish_signals += 1
+    if len(strong_bullish_patterns) > 0: strong_bullish_signals += len(strong_bullish_patterns) * 0.8
+    if stoch_bullish: strong_bullish_signals += 0.5
+    
+    # إشارات هبوطية قوية
+    if ma_bearish: strong_bearish_signals += 1.5
+    if not macd_bullish and macd_strength > 0.002 * price: strong_bearish_signals += 1.5
+    if rsi_bearish: strong_bearish_signals += 1
+    if bb_bearish: strong_bearish_signals += 1
+    if len(strong_bearish_patterns) > 0: strong_bearish_signals += len(strong_bearish_patterns) * 0.8
+    if stoch_bearish: strong_bearish_signals += 0.5
+    
+    # تأثير الحجم (يعزز الاتجاه الحالي إذا كان مرتفعاً)
+    if high_volume:
+        if strong_bullish_signals > strong_bearish_signals:
+            strong_bullish_signals *= 1.3
+        elif strong_bearish_signals > strong_bullish_signals:
+            strong_bearish_signals *= 1.3
+    
+    # تحديد الاتجاه النهائي بناء على أقوى الإشارات
+    trend_difference = strong_bullish_signals - strong_bearish_signals
+    
+    if trend_difference >= 3:
+        return {
+            "direction": "صعودي قوي جداً 🟢🟢",
+            "strength": trend_difference,
+            "details": {
+                "moving_averages": "صعودية قوية" if ma_bullish else "صعودية",
+                "macd": "إشارة شراء قوية" if macd_bullish else "إشارة شراء",
+                "rsi": "تشبع بيعي" if rsi_bullish else "في النطاق الطبيعي",
+                "bollinger": "سعر عند النطاق السفلي (تشبع بيعي)" if bb_bullish else "سعر في النطاق الأوسط",
+                "candle_patterns": "\n".join(strong_bullish_patterns) if strong_bullish_patterns else "لا توجد أنماط صعودية قوية",
+                "volume": "حجم تداول مرتفع جداً" if high_volume else "حجم تداول عادي",
+                "stochastic": "تشبع بيعي" if stoch_bullish else "في النطاق الطبيعي"
+            }
+        }
+    elif trend_difference >= 1.5:
+        return {
+            "direction": "صعودي قوي 🟢",
+            "strength": trend_difference,
+            "details": {
+                "moving_averages": "صعودية",
+                "macd": "إشارة شراء",
+                "rsi": "تشبع بيعي" if rsi_bullish else "في النطاق الطبيعي",
+                "bollinger": "سعر في النطاق السفلي" if bb_bullish else "سعر في النطاق الأوسط",
+                "candle_patterns": "\n".join(strong_bullish_patterns) if strong_bullish_patterns else "لا توجد أنماط صعودية قوية",
+                "volume": "حجم تداول مرتفع" if high_volume else "حجم تداول عادي",
+                "stochastic": "تشبع بيعي" if stoch_bullish else "في النطاق الطبيعي"
+            }
+        }
+    elif trend_difference <= -3:
+        return {
+            "direction": "هبوطي قوي جداً 🔴🔴",
+            "strength": trend_difference,
+            "details": {
+                "moving_averages": "هبوطية قوية" if ma_bearish else "هبوطية",
+                "macd": "إشارة بيع قوية" if not macd_bullish else "إشارة بيع",
+                "rsi": "تشبع شرائي" if rsi_bearish else "في النطاق الطبيعي",
+                "bollinger": "سعر عند النطاق العلوي (تشبع شرائي)" if bb_bearish else "سعر في النطاق الأوسط",
+                "candle_patterns": "\n".join(strong_bearish_patterns) if strong_bearish_patterns else "لا توجد أنماط هبوطية قوية",
+                "volume": "حجم تداول مرتفع جداً" if high_volume else "حجم تداول عادي",
+                "stochastic": "تشبع شرائي" if stoch_bearish else "في النطاق الطبيعي"
+            }
+        }
+    elif trend_difference <= -1.5:
+        return {
+            "direction": "هبوطي قوي 🔴",
+            "strength": trend_difference,
+            "details": {
+                "moving_averages": "هبوطية",
+                "macd": "إشارة بيع",
+                "rsi": "تشبع شرائي" if rsi_bearish else "في النطاق الطبيعي",
+                "bollinger": "سعر في النطاق العلوي" if bb_bearish else "سعر في النطاق الأوسط",
+                "candle_patterns": "\n".join(strong_bearish_patterns) if strong_bearish_patterns else "لا توجد أنماط هبوطية قوية",
+                "volume": "حجم تداول مرتفع" if high_volume else "حجم تداول عادي",
+                "stochastic": "تشبع شرائي" if stoch_bearish else "في النطاق الطبيعي"
+            }
+        }
+    else:
+        return {
+            "direction": "محايد ⚪",
+            "strength": trend_difference,
+            "details": {
+                "moving_averages": "غير واضحة",
+                "macd": "محايد",
+                "rsi": "في النطاق الطبيعي",
+                "bollinger": "سعر في النطاق الأوسط",
+                "candle_patterns": "لا توجد أنماط واضحة",
+                "volume": "حجم تداول عادي",
+                "stochastic": "في النطاق الطبيعي"
+            }
         }
 
-    elif data.startswith("skip_word_"):
-        target_uid = int(data.split("_")[2])
-        if user_id != target_uid:
-            bot.answer_callback_query(c.id)
-            return
-        word = random.choice(arabic_words)
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("تخطي", callback_data=f"skip_word_{target_uid}"))
-        bot.edit_message_text(
-            f"أعد إرسال الكلمة، وأحصل على نجوم إضافية: {word}",
-            chat_id, c.message.message_id, reply_markup=kb
-        )
-        words_waiting[target_uid] = {
-            "word": normalize_word(word),
-            "message_id": c.message.message_id,
-            "chat_id": chat_id,
-            "sent_time": datetime.now()
+def detect_candle_patterns(candles):
+    detected = []
+    o = candles['open']
+    h = candles['high']
+    l = candles['low']
+    c = candles['close']
+    
+    for name, pattern in CANDLE_PATTERNS.items():
+        if pattern['condition'].__code__.co_argcount == 4:
+            if pattern["condition"](o[-1], h[-1], l[-1], c[-1]):
+                detected.append(f"{pattern['emoji']} {name} ({pattern['direction']})")
+    
+    if len(o) > 1:
+        for name, pattern in CANDLE_PATTERNS.items():
+            if pattern['condition'].__code__.co_argcount == 8:
+                if pattern["condition"](o[-2], h[-2], l[-2], c[-2], o[-1], h[-1], l[-1], c[-1]):
+                    detected.append(f"{pattern['emoji']} {name} ({pattern['direction']})")
+    
+    if len(o) > 2:
+        for name, pattern in CANDLE_PATTERNS.items():
+            if pattern['condition'].__code__.co_argcount == 12:
+                if pattern["condition"](o[-3], h[-3], l[-3], c[-3], o[-2], h[-2], l[-2], c[-2], o[-1], h[-1], l[-1], c[-1]):
+                    detected.append(f"{pattern['emoji']} {name} ({pattern['direction']})")
+    
+    return detected if detected else ["🔍 لا توجد أنماط واضحة"]
+
+def calculate_support_resistance(candles):
+    recent_lows = candles['low'][-20:]
+    recent_highs = candles['high'][-20:]
+    
+    support = min(recent_lows)
+    resistance = max(recent_highs)
+    
+    return {
+        'support': support,
+        'resistance': resistance,
+        'pivot': (support + resistance + candles['close'][-1]) / 3
+    }
+
+def analyze_volume(candles):
+    avg_volume = sum(candles['volume'][-20:])/20
+    last_volume = candles['volume'][-1]
+    
+    if last_volume > avg_volume * 2:
+        return "حجم عالي جداً 📈"
+    elif last_volume > avg_volume * 1.5:
+        return "حجم مرتفع 📈"
+    elif last_volume < avg_volume * 0.5:
+        return "حجم منخفض 📉"
+    else:
+        return "حجم طبيعي ↔️"
+
+def calculate_technical_indicators(candles):
+    closes = candles['close']
+    highs = candles['high']
+    lows = candles['low']
+    
+    macd_line, signal_line = calculate_macd(closes)
+    
+    return {
+        'rsi': calculate_rsi(closes),
+        'macd': macd_line[-1] - signal_line[-1],
+        'macd_line': macd_line[-1],
+        'signal_line': signal_line[-1],
+        'stochastic': calculate_stochastic(highs, lows, closes),
+        'bollinger': calculate_bollinger_bands(closes),
+        'fibonacci': calculate_fibonacci_levels(highs, lows),
+        'volume_ratio': candles['volume'][-1] / (sum(candles['volume'][-20:])/20),
+        'current_price': closes[-1],
+        'price_change': (closes[-1] - closes[-2]) / closes[-2] * 100,
+        'macd_crossover': "صعودي" if macd_line[-1] > signal_line[-1] else "هبوطي"
+    }
+
+def calculate_rsi(prices, period=14):
+    deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+    gains = [delta if delta > 0 else 0 for delta in deltas]
+    losses = [-delta if delta < 0 else 0 for delta in deltas]
+    
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period if sum(losses[-period:]) != 0 else 0.001
+    
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+def calculate_macd(prices, fast=12, slow=26, signal=9):
+    def ema(data, period):
+        multiplier = 2 / (period + 1)
+        ema_values = [data[0]]
+        for price in data[1:]:
+            ema_values.append((price - ema_values[-1]) * multiplier + ema_values[-1])
+        return ema_values
+    
+    fast_ema = ema(prices, fast)
+    slow_ema = ema(prices, slow)
+    macd_line = [fast_ema[i] - slow_ema[i] for i in range(len(prices))]
+    signal_line = ema(macd_line, signal)
+    
+    return macd_line, signal_line
+
+def calculate_stochastic(highs, lows, closes, period=14):
+    k_values = []
+    for i in range(len(closes)-period, len(closes)):
+        highest_high = max(highs[i-period:i+1])
+        lowest_low = min(lows[i-period:i+1])
+        k = 100 * (closes[i] - lowest_low) / (highest_high - lowest_low) if (highest_high - lowest_low) != 0 else 50
+        k_values.append(k)
+    return sum(k_values) / len(k_values)
+
+def calculate_bollinger_bands(prices, period=20, std_dev=2):
+    sma = sum(prices[-period:]) / period
+    squared_diffs = [(price - sma) ** 2 for price in prices[-period:]]
+    std = (sum(squared_diffs) / period) ** 0.5
+    return {
+        'upper': sma + std_dev * std,
+        'middle': sma,
+        'lower': sma - std_dev * std
+    }
+
+def calculate_fibonacci_levels(highs, lows):
+    high = max(highs[-50:])
+    low = min(lows[-50:])
+    return {
+        '23.6%': high - (high - low) * 0.236,
+        '38.2%': high - (high - low) * 0.382,
+        '61.8%': high - (high - low) * 0.618
+    }
+
+def calculate_price_prediction(analysis, timeframe):
+    candles = analysis['candles']
+    indicators = analysis['indicators']
+    closes = candles['close'][-50:]  # زيادة الفترة لتحليل أفضل
+    highs = candles['high'][-50:]
+    lows = candles['low'][-50:]
+    volumes = candles['volume'][-50:]
+    
+    # 1. تحليل الاتجاه باستخدام متعددة المتوسطات المتحركة
+    ma_short = sum(closes[-5:]) / 5
+    ma_medium = sum(closes[-13:]) / 13
+    ma_long = sum(closes[-50:]) / 50
+    
+    # تحديد قوة الاتجاه (0.1 إلى 2.0)
+    trend_strength = 0
+    if ma_short > ma_medium > ma_long:
+        trend_strength = 1.5 + (closes[-1] - ma_short) / ma_short * 100
+    elif ma_short < ma_medium < ma_long:
+        trend_strength = -1.5 + (closes[-1] - ma_short) / ma_short * 100
+    
+    # 2. تحليل RSI مع مناطق التشبع الدقيقة
+    rsi = indicators['rsi']
+    rsi_factor = 0
+    if rsi < 25:
+        rsi_factor = 0.5
+    elif rsi < 30:
+        rsi_factor = 0.3
+    elif rsi > 75:
+        rsi_factor = -0.5
+    elif rsi > 70:
+        rsi_factor = -0.3
+    
+    # 3. تحليل MACD عميق
+    macd_strength = 0
+    if indicators['macd_line'] > indicators['signal_line'] and indicators['macd'] > 0:
+        macd_strength = 0.3 + min(0.2, indicators['macd'] / indicators['current_price'] * 100)
+    elif indicators['macd_line'] < indicators['signal_line'] and indicators['macd'] < 0:
+        macd_strength = -0.3 + max(-0.2, indicators['macd'] / indicators['current_price'] * 100)
+    
+    # 4. تحليل أنماط الشموع مع الأوزان
+    pattern_factor = 0
+    if analysis['candle_patterns']:
+        for pattern in analysis['candle_patterns']:
+            if "صعودي قوي" in pattern:
+                pattern_factor += 0.4
+            elif "صعودي" in pattern:
+                pattern_factor += 0.2
+            elif "هبوطي قوي" in pattern:
+                pattern_factor -= 0.4
+            elif "هبوطي" in pattern:
+                pattern_factor -= 0.2
+    
+    # 5. تحليل الحجم مع الاتجاه
+    volume_factor = 0
+    avg_volume = sum(volumes[-20:]) / 20
+    if volumes[-1] > avg_volume * 2:
+        volume_factor = 0.3 if trend_strength > 0 else -0.3
+    
+    # 6. تحليل بولينجر باند
+    bb_factor = 0
+    bb = indicators['bollinger']
+    price = indicators['current_price']
+    if price < bb['lower']:
+        bb_factor = 0.4
+    elif price > bb['upper']:
+        bb_factor = -0.4
+    elif price > bb['middle']:
+        bb_factor = 0.1
+    else:
+        bb_factor = -0.1
+    
+    # 7. دمج العوامل مع أوزان ديناميكية
+    base_prediction = price * (1 + 
+        (trend_strength * 0.015) +
+        (rsi_factor * 0.4) +
+        (macd_strength * 0.3) +
+        (pattern_factor * 0.25) +
+        (volume_factor * 0.2) +
+        (bb_factor * 0.2)
+    )
+    
+    # 8. ضبط حسب المدى الزمني
+    timeframe_factors = {
+        "15m": 0.005,
+        "30m": 0.008,
+        "1h": 0.012,
+        "4h": 0.018,
+        "1d": 0.025,
+        "1w": 0.04
+    }
+    timeframe_factor = timeframe_factors.get(timeframe, 0.01)
+    
+    # 9. تطبيق حدود الدعم والمقاومة الذكية
+    support = analysis['support_resistance']['support']
+    resistance = analysis['support_resistance']['resistance']
+    
+    # حساب القنوات السعرية
+    price_channel = max(highs[-20:]) - min(lows[-20:])
+    dynamic_support = support - price_channel * 0.05
+    dynamic_resistance = resistance + price_channel * 0.05
+    
+    adjusted_prediction = max(dynamic_support, min(dynamic_resistance, 
+                                price + (base_prediction - price) * timeframe_factor))
+    
+    # 10. حساب ثقة التوقع (0-100%) بناء على توافق المؤشرات
+    confidence_factors = [
+        abs(trend_strength) * 25,
+        (100 - abs(rsi - 50)) * 0.5,
+        abs(macd_strength) * 30,
+        abs(pattern_factor) * 20,
+        min(100, indicators['volume_ratio'] * 20)
+    ]
+    
+    confidence = sum(confidence_factors) / len(confidence_factors)
+    confidence = max(10, min(95, confidence))
+    
+    return {
+        "predicted_price": round(adjusted_prediction, 6 if price < 1 else 4),
+        "confidence": round(confidence, 1),
+        "trend": "صعودي قوي" if trend_strength >= 1.5 else "صعودي" if trend_strength > 0.5 
+                else "هبوطي قوي" if trend_strength <= -1.5 else "هبوطي" if trend_strength < -0.5 
+                else "محايد",
+        "rsi_status": "تشبع بيعي قوي" if rsi < 25 else "تشبع بيعي" if rsi < 30 
+                     else "تشبع شرائي قوي" if rsi > 75 else "تشبع شرائي" if rsi > 70 
+                     else "محايد",
+        "macd_status": "شراء قوي" if macd_strength > 0.4 else "شراء" if macd_strength > 0.2
+                      else "بيع قوي" if macd_strength < -0.4 else "بيع" if macd_strength < -0.2
+                      else "محايد"
+    }
+
+def generate_recommendation(analysis):
+    """
+    توليد توصية بناء على أقوى الإشارات من جميع المؤشرات
+    """
+    indicators = analysis['indicators']
+    trend = analysis['trend']
+    candle_patterns = analysis['candle_patterns']
+    
+    # تحديد أقوى الإشارات
+    strong_signals = {
+        'bullish': 0,
+        'bearish': 0
+    }
+    
+    # 1. تحليل الاتجاه العام (وزن عالي)
+    if "صعودي قوي جداً" in trend:
+        strong_signals['bullish'] += 2.5
+    elif "صعودي قوي" in trend:
+        strong_signals['bullish'] += 2.0
+    elif "هبوطي قوي جداً" in trend:
+        strong_signals['bearish'] += 2.5
+    elif "هبوطي قوي" in trend:
+        strong_signals['bearish'] += 2.0
+    
+    # 2. تحليل أنماط الشموع (وزن عالي للأنماط القوية)
+    strong_bullish_patterns = [p for p in candle_patterns if "صعودي قوي" in p or "hammer" in p or "bullish_engulfing" in p]
+    strong_bearish_patterns = [p for p in candle_patterns if "هبوطي قوي" in p or "shooting_star" in p or "bearish_engulfing" in p]
+    
+    strong_signals['bullish'] += len(strong_bullish_patterns) * 1.2
+    strong_signals['bearish'] += len(strong_bearish_patterns) * 1.2
+    
+    # 3. تحليل RSI (وزن متوسط)
+    rsi = indicators['rsi']
+    if rsi < 30:
+        strong_signals['bullish'] += 1.5
+    elif rsi > 70:
+        strong_signals['bearish'] += 1.5
+    
+    # 4. تحليل MACD (وزن عالي)
+    if indicators['macd_line'] > indicators['signal_line']:
+        macd_strength = indicators['macd_line'] - indicators['signal_line']
+        strong_signals['bullish'] += min(2.0, macd_strength / indicators['current_price'] * 10000)
+    else:
+        macd_strength = indicators['signal_line'] - indicators['macd_line']
+        strong_signals['bearish'] += min(2.0, macd_strength / indicators['current_price'] * 10000)
+    
+    # 5. تحليل بولينجر باند (وزن متوسط)
+    price = indicators['current_price']
+    bb = indicators['bollinger']
+    if price < bb['lower']:
+        strong_signals['bullish'] += 1.5
+    elif price > bb['upper']:
+        strong_signals['bearish'] += 1.5
+    
+    # 6. تحليل Stochastic (وزن منخفض)
+    stoch = indicators['stochastic']
+    if stoch < 20:
+        strong_signals['bullish'] += 0.8
+    elif stoch > 80:
+        strong_signals['bearish'] += 0.8
+    
+    # 7. تحليل الحجم (يعزز الاتجاه الحالي إذا كان مرتفعاً)
+    if indicators['volume_ratio'] > 2.0:
+        if strong_signals['bullish'] > strong_signals['bearish']:
+            strong_signals['bullish'] *= 1.3
+        elif strong_signals['bearish'] > strong_signals['bullish']:
+            strong_signals['bearish'] *= 1.3
+    
+    # تحديد التوصية النهائية بناء على أقوى الإشارات
+    signal_diff = strong_signals['bullish'] - strong_signals['bearish']
+    
+    if signal_diff >= 5:
+        return {
+            "decision": "شراء قوي جداً 🟢🟢",
+            "reason": "إشارات شراء قوية من معظم المؤشرات وأنماط الشموع"
+        }
+    elif signal_diff >= 3:
+        return {
+            "decision": "شراء قوي 🟢",
+            "reason": "إشارات شراء قوية من عدة مؤشرات"
+        }
+    elif signal_diff >= 1.5:
+        return {
+            "decision": "شراء 🟢",
+            "reason": "إشارات شراء من بعض المؤشرات"
+        }
+    elif signal_diff <= -5:
+        return {
+            "decision": "بيع قوي جداً 🔴🔴",
+            "reason": "إشارات بيع قوية من معظم المؤشرات وأنماط الشموع"
+        }
+    elif signal_diff <= -3:
+        return {
+            "decision": "بيع قوي 🔴",
+            "reason": "إشارات بيع قوية من عدة مؤشرات"
+        }
+    elif signal_diff <= -1.5:
+        return {
+            "decision": "بيع 🔴",
+            "reason": "إشارات بيع من بعض المؤشرات"
+        }
+    else:
+        return {
+            "decision": "محايد ⚪",
+            "reason": "إشارات متضاربة، يفضل الانتظار لمزيد من التأكيد"
         }
 
-    bot.answer_callback_query(c.id)
+def generate_analysis_report(analysis):
+    indicators = analysis['indicators']
+    sr = analysis['support_resistance']
+    recommendation = generate_recommendation(analysis)
+    prediction = calculate_price_prediction(analysis, analysis['timeframe'])
+    
+    report = f"""
+📊 تحليل {analysis['symbol']} - {analysis['timeframe']}
+────────────────────
+📈 تحليل الاتجاه:
+- الاتجاه: {analysis['trend']}
+- المتوسطات المتحركة: {analysis['trend_details']['moving_averages']}
+- مؤشر MACD: {analysis['trend_details']['macd']}
+- مؤشر RSI: {analysis['trend_details']['rsi']}
+- أنماط الشموع:
+"""
+    if analysis['candle_patterns'] and analysis['candle_patterns'][0] != "🔍 لا توجد أنماط واضحة":
+        for pattern in analysis['candle_patterns']:
+            report += f"  - {pattern}\n"
+    else:
+        report += "  - لا توجد أنماط واضحة\n"
+    
+    report += f"""- الحجم: {analysis['trend_details']['volume']}
+────────────────────
+💰 السعر الحالي: {indicators['current_price']:.4f}
+🎯 السعر المتوقع: {prediction['predicted_price']:.4f} (ثقة: {prediction['confidence']}%)
+────────────────────
+📌 المؤشرات الفنية:
+- RSI: {indicators['rsi']:.2f}
+- MACD: {indicators['macd']:.4f} (الخط: {indicators['macd_line']:.4f}, الإشارة: {indicators['signal_line']:.4f})
+- Stochastic: {indicators['stochastic']:.2f}
+- بولينجر باند:
+  العلوي: {indicators['bollinger']['upper']:.4f}
+  الأوسط: {indicators['bollinger']['middle']:.4f}
+  السفلي: {indicators['bollinger']['lower']:.4f}
+────────────────────
+📌 المستويات الرئيسية:
+- الدعم: {sr['support']:.4f}
+- المقاومة: {sr['resistance']:.4f}
+- النقطة المحورية: {sr['pivot']:.4f}
+────────────────────
+💡 التوصية: {recommendation['decision']}
+🔍 السبب: {recommendation['reason']}
+"""
+    return report
 
-@bot.message_handler(func=lambda m: m.text and m.reply_to_message and m.from_user.id == DEVELOPER_ID and m.text.startswith("اضافة "))
-def add_balance(m):
+def get_klines(symbol, interval, limit=100):
     try:
-        amount = int(m.text.split()[1])
-        target_id = m.reply_to_message.from_user.id
-        user_balances[target_id] = user_balances.get(target_id, 0) + amount
-        bot.reply_to(m, f"✅ تم إضافة {amount} لرصيد العضو.")
-    except:
-        bot.reply_to(m, "❌ تأكد من كتابة الأمر بشكل صحيح: اضافة [المبلغ]")
+        params = {'symbol': symbol, 'interval': interval, 'limit': limit}
+        response = requests.get(f"{BINANCE_API_URL}/klines", params=params, timeout=10)
+        return response.json() if response.status_code == 200 else None
+    except Exception as e:
+        print(f"Error fetching klines: {e}")
+        return None
 
+def main():
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    print("✅ البوت يعمل بنجاح...")
+    application.run_polling()
 
-
-
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "تصفير توب" and m.from_user.id == DEVELOPER_ID)
-def reset_top(m):
-    for uid in list(user_balances.keys()):
-        user_balances[uid] = 0
-    bot.reply_to(m, "✅ تم تصفير جميع الأرصدة.")
-
-
-import heapq
-last_top_time = 0
-top_list = []
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "توب")
-def top_users(m):
-    global last_top_time, top_list
-    now = time.time()
-    if now - last_top_time > 600:
-        sorted_balances = heapq.nlargest(20, user_balances.items(), key=lambda x: x[1])
-        top_list = []
-        for uid, balance in sorted_balances:
-            try:
-                name = bot.get_chat(uid).first_name
-            except:
-                name = f"مستخدم {uid}"
-            top_list.append((name, uid, balance))
-        last_top_time = now
-
-    if not top_list:
-        bot.reply_to(m, "لا يوجد أي مستخدم يمتلك رصيد.")
-        return
-
-    msg = "🏆 قائمة أغنى 20 مستخدم:\n"
-    for i, (name, uid, balance) in enumerate(top_list, 1):
-        msg += f"{i}. {name} | {balance} نجمة\n"
-    bot.reply_to(m, msg)
-
-
-# --- Start the bot ---
-if __name__ == "__main__":
-    print("Bot is running...")
-    bot.infinity_polling()
+if __name__ == '__main__':
+    main()
